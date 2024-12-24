@@ -1,0 +1,542 @@
+package OurScheme
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"log"
+	"math"
+	"math/rand"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// OurScheme 系统参数
+type OurScheme struct {
+	L             int                 // 每个分区允许的最大大小
+	Key           []byte              // 系统密钥
+	H1            func([]byte) []byte // 哈希函数 H1
+	H2            func([]byte) []byte // 哈希函数 H2
+	EDB           map[string][]byte   // 加密数据库
+	LocalTree     map[string]int64    // 更改为存储整数的 map
+	ClusterFlist  [][]int             // 分区文件列表
+	ClusterKlist  [][]string          // 分区关键词列表
+	KeywordToSK   map[string][]byte   // 每个关键词对应的 OTP 密钥
+	BsLength      int                 // Bitmap 长度
+	LocalPosition [2]int              // 查询范围对应的分区位置
+	Flags         []string            // 标记需要查询的边界（左边界 "l"，右边界 "r"）
+	FlagEmpty     []string            // 标记查询结果是否为空
+
+}
+
+// Setup 初始化系统参数
+func Setup(L int) *OurScheme {
+	// 生成随机密钥
+	key := make([]byte, 16)
+	rand.Read(key)
+
+	// 定义 H1 和 H2
+	H1 := func(data []byte) []byte {
+		hash := sha256.Sum256(data)
+		return hash[:]
+	}
+	H2 := func(data []byte) []byte {
+		hash := sha256.Sum256(data)
+		return hash[:]
+	}
+
+	// 初始化 EDB 和其他结构
+	return &OurScheme{
+		L:            L,
+		Key:          key,
+		H1:           H1,
+		H2:           H2,
+		EDB:          make(map[string][]byte),
+		LocalTree:    make(map[string]int64),
+		ClusterFlist: [][]int{},
+		ClusterKlist: [][]string{},
+		KeywordToSK:  make(map[string][]byte),
+		BsLength:     L,
+	}
+}
+
+// sortKeywords 按照数值顺序排序关键词
+func sortKeywords(invertedIndex map[string][]int) []string {
+	// 获取所有关键词
+	keywords := make([]string, 0, len(invertedIndex))
+	for keyword := range invertedIndex {
+		keywords = append(keywords, keyword)
+	}
+
+	// 按照关键词的数值顺序排序
+	sort.Slice(keywords, func(i, j int) bool {
+		ki, _ := strconv.ParseInt(keywords[i], 10, 64)
+		kj, _ := strconv.ParseInt(keywords[j], 10, 64)
+		return ki < kj
+	})
+
+	// 输出排序后的关键词
+	//fmt.Println("keywords:", keywords)
+	return keywords
+}
+
+// BuildIndex 构建倒排索引
+func (sp *OurScheme) BuildIndex(invertedIndex map[string][]int, keywords []string) error {
+	currentGroup := []int{}      // 当前分区的文件 ID
+	currentKlist := []string{}   // 当前分区的关键词
+	clusterFlist := [][]int{}    // 所有分区的文件 ID
+	clusterKlist := [][]string{} // 所有分区的关键词
+	clusterVolume := []int{}     // 分区的文件数量
+
+	// 遍历每个关键词
+	for i, keyword := range keywords {
+		postings := invertedIndex[keyword]
+
+		// 检查是否可以加入当前分区
+		if len(currentGroup)+len(postings) < sp.L {
+			currentGroup = append(currentGroup, postings...)
+			currentKlist = append(currentKlist, keyword)
+
+			// 加密并存储
+			sp.encryptAndStore(keyword, currentGroup)
+
+			// 如果是最后一个关键词，保存当前分区
+			if i == len(keywords)-1 {
+				clusterFlist = append(clusterFlist, append([]int{}, currentGroup...))
+				clusterKlist = append(clusterKlist, append([]string{}, currentKlist...))
+				clusterVolume = append(clusterVolume, len(currentGroup))
+			}
+		} else {
+			// 保存当前分区
+			clusterFlist = append(clusterFlist, append([]int{}, currentGroup...))
+			clusterKlist = append(clusterKlist, append([]string{}, currentKlist...))
+			clusterVolume = append(clusterVolume, len(currentGroup))
+
+			// 初始化新分区
+			currentGroup = append([]int{}, postings...)
+			currentKlist = append([]string{}, keyword)
+
+			// 加密并存储
+			sp.encryptAndStore(keyword, currentGroup)
+
+			// 如果是最后一个关键词，保存新分区
+			if i == len(keywords)-1 {
+				clusterFlist = append(clusterFlist, append([]int{}, currentGroup...))
+				clusterKlist = append(clusterKlist, append([]string{}, currentKlist...))
+				clusterVolume = append(clusterVolume, len(currentGroup))
+			}
+		}
+	}
+
+	// 保存分区结果
+	sp.ClusterFlist = clusterFlist
+	//fmt.Println("ClusterFlist:", sp.ClusterFlist)
+	sp.ClusterKlist = clusterKlist
+	//fmt.Println("ClusterKlist:", sp.ClusterKlist)
+
+	// 构建 LocalTree
+	sp.buildLocalTree(clusterKlist, clusterVolume)
+
+	return nil
+}
+
+// buildLocalTreeFromClusters 构建 LocalTree
+func (sp *OurScheme) buildLocalTree(clusterKlist [][]string, clusterVolume []int) {
+	genList := []string{}
+	for _, klist := range clusterKlist {
+		genList = append(genList, klist[len(klist)-1]) // 每个分区的最后一个关键词
+	}
+
+	// 填充到最近的 2 的幂次
+	clusterHeight := int(math.Ceil(math.Log2(float64(len(genList)))))
+	padding := genList[len(genList)-1]
+	for len(genList) < int(math.Pow(2, float64(clusterHeight))) {
+		genList = append(genList, padding)
+	}
+
+	// 构建树
+	localTree := make(map[string]int64)
+	for i := clusterHeight; i >= 0; i-- {
+		for j := 0; j < int(math.Pow(2, float64(i))); j++ {
+			tempKey := fmt.Sprintf("%0*b", i+1, j) // 二进制表示
+			if i == clusterHeight {
+				// 将关键词转换为整数，存储在 LocalTree 中
+				localTree[tempKey], _ = strconv.ParseInt(genList[j], 10, 64)
+			} else {
+				localTree[tempKey] = localTree[tempKey+"0"]
+			}
+		}
+	}
+
+	// 保存树和分区信息
+	sp.LocalTree = localTree
+	sp.LocalTree["volume"] = int64(len(clusterVolume)) // 保存分区文件数量
+}
+
+// encryptAndStore 加密并存储
+func (sp *OurScheme) encryptAndStore(keyword string, postings []int) {
+	// 生成 Bitmap
+	bitmap := sp.generateBitmap(postings)
+	//log.Printf("bitmap_string: %s", bitmap)
+	// 生成 OTP 密钥
+	otpKey := sp.H1([]byte(keyword))
+
+	// 加密
+	encryptedBitmap := xorBytesWithPadding(bitmap, otpKey, sp.L)
+
+	// 存储到 EDB
+	hashedKey := hex.EncodeToString(sp.H1([]byte(keyword)))
+	sp.KeywordToSK[hashedKey] = otpKey
+	sp.EDB[hashedKey] = encryptedBitmap
+}
+
+func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
+	sp.FlagEmpty = []string{}
+	sp.Flags = []string{}
+	sp.LocalPosition = [2]int{}
+
+	// 通过搜索树确定查询范围对应的分区位置
+	p1, err := sp.searchTree(queryRange[0])
+	if err != nil {
+		return nil, fmt.Errorf("无法解析查询范围的起始位置：%v", err)
+	}
+	p2, err := sp.searchTree(queryRange[1])
+	if err != nil {
+		return nil, fmt.Errorf("无法解析查询范围的结束位置：%v", err)
+	}
+	sp.LocalPosition = [2]int{p1, p2}
+
+	// 打印分区范围
+	//log.Printf("Query range: %v, LocalPosition: %v", queryRange, sp.LocalPosition)
+
+	// 获取查询范围对应的分区关键词列表
+	localCluster := sp.ClusterKlist[p1 : p2+1]
+	//log.Printf("Local cluster for query range: %v", localCluster)
+
+	// 如果查询范围的起点和终点完全包含在分区中，则不需要额外的服务器查询
+	if queryRange[0] == localCluster[0][0] && queryRange[1] == localCluster[len(localCluster)-1][len(localCluster[len(localCluster)-1])-1] {
+		//log.Printf("Query range fully covered by local cluster, no tokens required.")
+		return []string{}, nil
+	}
+
+	// 需要查询服务器的 token
+	serverTokens := []string{}
+	if queryRange[0] != localCluster[0][0] { // 如果查询的“左边界”值不是某个区间的“左边界”值
+		tempIndex := indexOf(localCluster[0], queryRange[0]) - 1 //找到该关键字的位置，然后取该关键字左边的关键字的下标，因为这是闭区间，所以选择更小的值作为开区间边界
+		if tempIndex < 0 {
+			// 将 queryRange[0] 转换为 int
+			queryRangeInt, err := strconv.Atoi(queryRange[0])
+			if err != nil {
+				log.Fatalf("Failed to convert queryRange[0] to int: %v", err)
+			}
+
+			// 将 localCluster[0] 转换为 []int
+			localClusterInt := make([]int, len(localCluster[0]))
+			for i, v := range localCluster[0] {
+				localClusterInt[i], err = strconv.Atoi(v)
+				if err != nil {
+					log.Fatalf("Failed to convert localCluster[0] value to int: %v", err)
+				}
+			}
+
+			// 找到比 queryRange[0] 大且差距最小的值
+			tempIndex = binarySearchClosest(localClusterInt, queryRangeInt, true)
+		}
+		tempToken := localCluster[0][tempIndex]
+		sp.FlagEmpty = append(sp.FlagEmpty, tempToken) //若没有，则找到最接近的整数值作为查询关键字，然后生成token
+		serverTokens = append(serverTokens, tempToken)
+		sp.Flags = append(sp.Flags, "l") // 标记左边界需要查询\
+	}
+
+	if queryRange[1] != localCluster[len(localCluster)-1][len(localCluster[len(localCluster)-1])-1] { // 如果查询的“右边界”值不是某个区间的“右边界”值
+		tempIndex := indexOf(localCluster[len(localCluster)-1], queryRange[1]) //区间有边界不需要左开区间处理，也就是不-1
+		if tempIndex < 0 {                                                     //找到最接近的整数值作为查询关键字，然后生成token
+			// 将 queryRange[1] 转换为 int
+			queryRangeInt, err := strconv.Atoi(queryRange[1])
+			if err != nil {
+				log.Fatalf("Failed to convert queryRange[1] to int: %v", err)
+			}
+
+			// 将 localCluster[len(localCluster)-1] 转换为 []int
+			localClusterInt := make([]int, len(localCluster[len(localCluster)-1]))
+			for i, v := range localCluster[len(localCluster)-1] {
+				localClusterInt[i], err = strconv.Atoi(v)
+				if err != nil {
+					log.Fatalf("Failed to convert localCluster[len(localCluster)-1] value to int: %v", err)
+				}
+			}
+
+			// 找到比 queryRange[1] 小且差距最小的值
+			tempIndex = binarySearchClosest(localClusterInt, queryRangeInt, false)
+		}
+		tempToken := localCluster[len(localCluster)-1][tempIndex]
+		sp.FlagEmpty = append(sp.FlagEmpty, tempToken) //若没有，则找到最接近的整数值作为查询关键字，然后生成token
+		serverTokens = append(serverTokens, tempToken)
+		sp.Flags = append(sp.Flags, "r") // 标记右边界需要查询
+	}
+	if len(sp.FlagEmpty) == 2 && sp.FlagEmpty[0] == sp.FlagEmpty[1] {
+		fmt.Println("Target query is in empty range!")
+		return []string{}, nil
+	}
+
+	// 对 serverTokens 进行哈希处理
+	hashedTokens := []string{}
+	for _, token := range serverTokens {
+		hashed := hex.EncodeToString(sp.H1([]byte(token)))
+		hashedTokens = append(hashedTokens, hashed)
+		//log.Printf("Generated token for %v: %v", token, hashed)
+	}
+
+	return hashedTokens, nil
+}
+
+func (sp *OurScheme) SearchTokens(tokens []string) [][]byte {
+	searchResult := [][]byte{}
+	for _, token := range tokens {
+		// 从加密数据库中获取与 token 对应的加密位图
+		if value, ok := sp.EDB[token]; ok {
+			searchResult = append(searchResult, value)
+			//log.Printf("Token found in EDB: %v, Encrypted result: %v", token, value)
+		} else {
+			log.Printf("Token not found in EDB: %v", token)
+		}
+	}
+	return searchResult
+}
+
+func (sp *OurScheme) LocalSearch(searchResult [][]byte, tokens []string) ([]int, error) {
+	clusterFlist := sp.ClusterFlist // 分区的文件列表
+	finalResult := []int{}          // 搜索结果文件 ID 列表
+	// 获取查询范围对应的分区位置
+	p1, p2 := sp.LocalPosition[0], sp.LocalPosition[1]
+	//log.Printf("Performing local search with LocalPosition: %v, Flags: %v", sp.LocalPosition, sp.Flags)
+
+	// 如果没有服务器返回的加密结果，直接返回分区内的文件
+	if len(searchResult) == 0 {
+		//log.Printf("No encrypted results from server, returning all files in range.")
+		for _, fileList := range clusterFlist[p1 : p2+1] {
+			finalResult = append(finalResult, fileList...)
+		}
+		return finalResult, nil
+	}
+
+	// 生成字符串,1的个数为该分区包含的文档标识符个数，并转换为 byte[]
+	fullOneBytes := []byte(strings.Repeat("1", len(sp.ClusterFlist[p1])) + strings.Repeat("0", sp.BsLength-len(sp.ClusterFlist[p1])))
+
+	// 如果有两个加密结果（左边界和右边界）
+	if len(searchResult) == 2 {
+		decResult := [][]byte{
+			xorBytesWithPadding(searchResult[0], sp.KeywordToSK[tokens[0]], sp.L), // 解密左边界
+			xorBytesWithPadding(searchResult[1], sp.KeywordToSK[tokens[1]], sp.L), // 解密右边界
+		}
+		//log.Printf("Decrypted results: Left: %v, Right: %v", decResult[0], decResult[1])
+
+		if p1 == p2 { // 单分区处理
+			compBitmap := xorBytesWithPadding(decResult[0], decResult[1], sp.L) // 用异或计算，合并位图
+			//log.Printf("Combined bitmap for single partition: %v", compBitmap)
+			finalResult = append(finalResult, sp.parseFileID_for_01(compBitmap, clusterFlist[p1])...)
+		} else { // 多分区处理,需要使用特殊parse解析01串
+			leftBitmap := xorBytesWithPadding(decResult[0], fullOneBytes, sp.L)
+			//log.Printf("Left bitmap: %v", leftBitmap)
+			finalResult = append(finalResult, sp.parseFileID_for_01(leftBitmap, clusterFlist[p1])...)
+
+			rightBitmap := decResult[1]
+			//log.Printf("Right bitmap: %v", rightBitmap)
+			finalResult = append(finalResult, sp.parseFileID(rightBitmap, clusterFlist[p2])...)
+
+			// 处理中间分区的文件
+			for _, fileList := range clusterFlist[p1+1 : p2] {
+				finalResult = append(finalResult, fileList...)
+			}
+		}
+	} else if len(searchResult) == 1 { // 单边界情况
+		//log.Printf("sp.KeywordToSK[tokens[0]]: %v", sp.KeywordToSK[tokens[0]])
+		decResult := xorBytesWithPadding(searchResult[0], sp.KeywordToSK[tokens[0]], sp.L)
+		//log.Printf("Decrypted result for single token: %v", decResult)
+		if contains(sp.Flags, "l") { // 处理左边界，需要使用特殊parse解析01串
+			leftBitmap := xorBytesWithPadding(decResult, fullOneBytes, sp.L)
+			//log.Printf("Left bitmap for single token: %v", leftBitmap)
+			finalResult = append(finalResult, sp.parseFileID_for_01(leftBitmap, clusterFlist[p1])...)
+			for _, fileList := range clusterFlist[p1+1 : p2+1] {
+				finalResult = append(finalResult, fileList...)
+			}
+		}
+		if contains(sp.Flags, "r") { // 处理右边界
+			rightBitmap := decResult
+			//log.Printf("Right bitmap for single token: %v", rightBitmap)
+			finalResult = append(finalResult, sp.parseFileID(rightBitmap, clusterFlist[p2])...)
+			for _, fileList := range clusterFlist[p1:p2] {
+				finalResult = append(finalResult, fileList...)
+			}
+		}
+	}
+
+	return finalResult, nil
+}
+
+// searchTree 在本地树中查找关键词的位置
+func (sp *OurScheme) searchTree(queryValue string) (int, error) {
+	// 将查询值转化为整数（假设查询值是字符串格式的数字）
+	queryValueInt, err := strconv.ParseInt(queryValue, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("无法将查询值转换为整数: %v", err)
+	}
+
+	node := "0" // 初始化为树的根节点
+	for i := 0; i < int(math.Log2(float64(len(sp.ClusterFlist)))); i++ {
+		// 获取当前节点的值
+		nodeValue, ok := sp.LocalTree[node]
+		if !ok {
+			return 0, fmt.Errorf("无法找到节点 %s", node)
+		}
+
+		// 比较查询值与当前节点的值
+		if queryValueInt > nodeValue {
+			node += "1" // 如果大于当前节点，向右子树移动
+		} else {
+			node += "0" // 如果小于或等于当前节点，向左子树移动
+		}
+	}
+
+	// 将二进制节点位置转换为整数
+	position, err := strconv.ParseInt(node, 2, 64)
+	if err != nil {
+		return 0, fmt.Errorf("解析查询值出错：%v", err)
+	}
+
+	return int(position), nil
+}
+
+// 辅助函数：生成位图
+func (sp *OurScheme) generateBitmap(group []int) []byte {
+	bitString := strings.Repeat("1", len(group)) + strings.Repeat("0", sp.L-len(group))
+	//log.Printf("bitString: %s", bitString)
+	//bitmap, _ := strconv.ParseUint(bitString, 2, 64)
+	//log.Printf("bitmap_int: %d", bitmap)
+	return []byte(bitString)
+}
+func xorBytesWithPadding(a, b []byte, bytelen int) []byte {
+	// 检查 bytelen 是否合法
+	if bytelen <= 0 {
+		return []byte{}
+	}
+	// 如果 a 和 b 完全相同，则直接返回 a
+	if len(a) == len(b) && bytes.Equal(a, b) {
+		return a
+	}
+	// 截取 a 和 b 的最低 bytelen 个字节（如果长度不足，填充 0）
+	truncatedA := make([]byte, bytelen)
+	truncatedB := make([]byte, bytelen)
+
+	// 从后往前拷贝数据
+	copy(truncatedA[max(0, bytelen-len(a)):], a[max(0, len(a)-bytelen):])
+	copy(truncatedB[max(0, bytelen-len(b)):], b[max(0, len(b)-bytelen):])
+
+	// 执行异或操作
+	result := make([]byte, bytelen)
+	for i := 0; i < bytelen; i++ {
+		result[i] = truncatedA[i] ^ truncatedB[i]
+	}
+
+	return result
+}
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func (sp *OurScheme) parseFileID_for_01(bitmap []uint8, dbList []int) []int {
+	result := []int{}
+	dblen := len(dbList)
+	// 遍历 bitmap 的每一位
+	for byteIndex, b := range bitmap {
+		if b == 1 && byteIndex < dblen { // 检查当前位是否为 1
+			result = append(result, dbList[byteIndex])
+		}
+	}
+
+	return result
+}
+func (sp *OurScheme) parseFileID(bitmap []byte, dbList []int) []int {
+	result := []int{}
+
+	// 将位图直接转换为字符形式的字符串
+	bitString := ""
+	for _, b := range bitmap {
+		// 检查 b 是否是 ASCII 可显示字符，如果是则直接转换为字符，否则转换为二进制字符串
+		if b >= 32 && b <= 126 { // ASCII 可见字符范围
+			bitString += string(b)
+		} else {
+			bitString += fmt.Sprintf("%08b", b) // 转换为 8 位二进制字符串
+		}
+	}
+
+	// 打印 bitString
+	//fmt.Printf("BitString (converted): %s\n", bitString)
+
+	// 只保留从右往左数的 L 位
+	if len(bitString) > sp.L {
+		bitString = bitString[len(bitString)-sp.L:] // 截取最后 L 位
+	}
+
+	// 遍历保留的 L 位，提取对应位置的文件 ID
+	for i, bit := range bitString {
+		if i >= len(dbList) { // 超出文件列表长度则停止
+			break
+		}
+		if bit == '1' { // 如果位为 '1'，则添加对应的文件 ID
+			result = append(result, dbList[i])
+		}
+	}
+
+	return result
+}
+func indexOf(slice []string, value string) int {
+	for i, v := range slice {
+		if v == value {
+			return i
+		}
+	}
+	return -1 // 未找到返回 -1
+}
+func contains(slice []string, item string) bool {
+	for _, v := range slice {
+		if v == item {
+			return true
+		}
+	}
+	return false
+}
+func binarySearchClosest(slice []int, value int, findLarger bool) int {
+	low, high := 0, len(slice)-1
+	closest := -1
+
+	for low <= high {
+		mid := (low + high) / 2
+		if slice[mid] == value {
+			return mid
+		}
+		if findLarger {
+			if slice[mid] > value {
+				closest = mid
+				high = mid - 1
+			} else {
+				low = mid + 1
+			}
+		} else {
+			if slice[mid] < value {
+				closest = mid
+				low = mid + 1
+			} else {
+				high = mid - 1
+			}
+		}
+	}
+	if closest < 0 {
+		return 0
+	}
+	return closest
+}
