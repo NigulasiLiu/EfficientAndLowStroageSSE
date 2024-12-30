@@ -1,7 +1,7 @@
 package BuildIndex
 
 import (
-	"VolumeHidingSSE/Experiment/tool"
+	"EfficientAndLowStroageSSE/Experiment/tool"
 	"errors"
 	"fmt"
 	"log"

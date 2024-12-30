@@ -1,8 +1,8 @@
 package OurScheme
 
 import (
-	"VolumeHidingSSE/config"
-	"VolumeHidingSSE/tool"
+	"EfficientAndLowStroageSSE/config"
+	"EfficientAndLowStroageSSE/tool"
 	"encoding/hex"
 	"fmt"
 	"math/rand"

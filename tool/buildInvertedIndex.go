@@ -1,7 +1,7 @@
 package tool
 
 import (
-	"VolumeHidingSSE/config"
+	"EfficientAndLowStroageSSE/config"
 	"bufio"
 	"fmt"
 	"math"

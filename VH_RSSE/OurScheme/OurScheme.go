@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"math/rand"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -20,7 +19,7 @@ type OurScheme struct {
 	H1            func([]byte) []byte // 哈希函数 H1
 	H2            func([]byte) []byte // 哈希函数 H2
 	EDB           map[string][]byte   // 加密数据库
-	LocalTree     map[string]int64    // 更改为存储整数的 map
+	LocalTree     map[string][]int64  // 更改为存储整数的 map
 	ClusterFlist  [][]int             // 分区文件列表
 	ClusterKlist  [][]string          // 分区关键词列表
 	KeywordToSK   map[string][]byte   // 每个关键词对应的 OTP 密钥
@@ -54,32 +53,12 @@ func Setup(L int) *OurScheme {
 		H1:           H1,
 		H2:           H2,
 		EDB:          make(map[string][]byte),
-		LocalTree:    make(map[string]int64),
+		LocalTree:    make(map[string][]int64),
 		ClusterFlist: [][]int{},
 		ClusterKlist: [][]string{},
 		KeywordToSK:  make(map[string][]byte),
 		BsLength:     L,
 	}
-}
-
-// sortKeywords 按照数值顺序排序关键词
-func sortKeywords(invertedIndex map[string][]int) []string {
-	// 获取所有关键词
-	keywords := make([]string, 0, len(invertedIndex))
-	for keyword := range invertedIndex {
-		keywords = append(keywords, keyword)
-	}
-
-	// 按照关键词的数值顺序排序
-	sort.Slice(keywords, func(i, j int) bool {
-		ki, _ := strconv.ParseInt(keywords[i], 10, 64)
-		kj, _ := strconv.ParseInt(keywords[j], 10, 64)
-		return ki < kj
-	})
-
-	// 输出排序后的关键词
-	//fmt.Println("keywords:", keywords)
-	return keywords
 }
 
 // BuildIndex 构建倒排索引
@@ -88,7 +67,7 @@ func (sp *OurScheme) BuildIndex(invertedIndex map[string][]int, keywords []strin
 	currentKlist := []string{}   // 当前分区的关键词
 	clusterFlist := [][]int{}    // 所有分区的文件 ID
 	clusterKlist := [][]string{} // 所有分区的关键词
-	clusterVolume := []int{}     // 分区的文件数量
+	//clusterVolume := []int{}     // 分区的文件数量
 
 	// 遍历每个关键词
 	for i, keyword := range keywords {
@@ -106,13 +85,13 @@ func (sp *OurScheme) BuildIndex(invertedIndex map[string][]int, keywords []strin
 			if i == len(keywords)-1 {
 				clusterFlist = append(clusterFlist, append([]int{}, currentGroup...))
 				clusterKlist = append(clusterKlist, append([]string{}, currentKlist...))
-				clusterVolume = append(clusterVolume, len(currentGroup))
+				//clusterVolume = append(clusterVolume, len(currentGroup))
 			}
 		} else {
 			// 保存当前分区
 			clusterFlist = append(clusterFlist, append([]int{}, currentGroup...))
 			clusterKlist = append(clusterKlist, append([]string{}, currentKlist...))
-			clusterVolume = append(clusterVolume, len(currentGroup))
+			//clusterVolume = append(clusterVolume, len(currentGroup))
 
 			// 初始化新分区
 			currentGroup = append([]int{}, postings...)
@@ -125,7 +104,7 @@ func (sp *OurScheme) BuildIndex(invertedIndex map[string][]int, keywords []strin
 			if i == len(keywords)-1 {
 				clusterFlist = append(clusterFlist, append([]int{}, currentGroup...))
 				clusterKlist = append(clusterKlist, append([]string{}, currentKlist...))
-				clusterVolume = append(clusterVolume, len(currentGroup))
+				//clusterVolume = append(clusterVolume, len(currentGroup))
 			}
 		}
 	}
@@ -137,47 +116,74 @@ func (sp *OurScheme) BuildIndex(invertedIndex map[string][]int, keywords []strin
 	//fmt.Println("ClusterKlist:", sp.ClusterKlist)
 
 	// 构建 LocalTree
-	sp.buildLocalTree(clusterKlist, clusterVolume)
+	sp.buildLocalTree(clusterKlist)
 
 	return nil
 }
 
 // buildLocalTreeFromClusters 构建 LocalTree
-func (sp *OurScheme) buildLocalTree(clusterKlist [][]string, clusterVolume []int) {
-	genList := []string{}
+func (sp *OurScheme) buildLocalTree(clusterKlist [][]string) {
+	genList := [][]string{}
 	for _, klist := range clusterKlist {
-		genList = append(genList, klist[len(klist)-1]) // 每个分区的最后一个关键词
+		if len(klist) > 0 {
+			genList = append(genList, []string{klist[0], klist[len(klist)-1]}) // 每个分区的第一个和最后一个关键词
+		}
 	}
 
 	// 填充到最近的 2 的幂次
 	clusterHeight := int(math.Ceil(math.Log2(float64(len(genList)))))
-	padding := genList[len(genList)-1]
+	fmt.Printf("clusterHeight: %d\n", clusterHeight)
+	padding := genList[len(genList)-1][1]
 	for len(genList) < int(math.Pow(2, float64(clusterHeight))) {
-		genList = append(genList, padding)
+		genList = append(genList, []string{padding, padding})
 	}
 
+	//// 创建输出文件
+	//file, err := os.Create("C:\\Users\\Admin\\Desktop\\GoPros\\EfficientAndLowStroageSSE\\dataset\\tree_new.txt")
+	//if err != nil {
+	//	fmt.Println("Error creating file:", err)
+	//	return
+	//}
+	//defer file.Close()
+	//// 写入文件的JSON编码器
+	//encoder := json.NewEncoder(file)
+	//encoder.SetIndent("", "  ") // 设置格式化输出
+
 	// 构建树
-	localTree := make(map[string]int64)
+	localTree := make(map[string][]int64)
 	for i := clusterHeight; i >= 0; i-- {
 		for j := 0; j < int(math.Pow(2, float64(i))); j++ {
 			tempKey := fmt.Sprintf("%0*b", i+1, j) // 二进制表示
 			if i == clusterHeight {
 				// 将关键词转换为整数，存储在 LocalTree 中
-				localTree[tempKey], _ = strconv.ParseInt(genList[j], 10, 64)
+				leftv, _ := strconv.ParseInt(genList[j][0], 10, 64)
+				rightv, _ := strconv.ParseInt(genList[j][1], 10, 64)
+				localTree[tempKey] = append(localTree[tempKey], leftv)
+				localTree[tempKey] = append(localTree[tempKey], rightv)
+				// 输出到文件
+				//fmt.Fprintf(file, "i == %d, tempKey = %s: left = %d, right = %d\n", i, tempKey, leftv, rightv)
 			} else {
-				localTree[tempKey] = localTree[tempKey+"0"]
+				//localTree[tempKey][0] = localTree[tempKey+"0"][0]
+				//localTree[tempKey][1] = localTree[tempKey+"1"][1]
+				localTree[tempKey] = append(localTree[tempKey], localTree[tempKey+"0"][0])
+				localTree[tempKey] = append(localTree[tempKey], localTree[tempKey+"1"][1])
 			}
 		}
 	}
-
+	//// 保存树的最终内容
+	//err = encoder.Encode(localTree)
+	//if err != nil {
+	//	fmt.Println("Error encoding to JSON:", err)
+	//}
 	// 保存树和分区信息
 	sp.LocalTree = localTree
-	sp.LocalTree["volume"] = int64(len(clusterVolume)) // 保存分区文件数量
+	//sp.LocalTree["volume"] = int64(len(clusterVolume)) // 保存分区文件数量
 }
 
 // encryptAndStore 加密并存储
 func (sp *OurScheme) encryptAndStore(keyword string, postings []int) {
 	// 生成 Bitmap
+	//log.Printf("group len: %d, sp.L: %d", len(postings), sp.L)
 	bitmap := sp.generateBitmap(postings)
 	//log.Printf("bitmap_string: %s", bitmap)
 	// 生成 OTP 密钥
@@ -205,6 +211,9 @@ func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
 	p2, err := sp.searchTree(queryRange[1])
 	if err != nil {
 		return nil, fmt.Errorf("无法解析查询范围的结束位置：%v", err)
+	}
+	if p1 > p2+1 {
+		return []string{}, nil
 	}
 	sp.LocalPosition = [2]int{p1, p2}
 
@@ -240,9 +249,9 @@ func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
 					log.Fatalf("Failed to convert localCluster[0] value to int: %v", err)
 				}
 			}
-
 			// 找到比 queryRange[0] 大且差距最小的值
 			tempIndex = binarySearchClosest(localClusterInt, queryRangeInt, true)
+			//log.Printf("Left queryRangeInt: %d, tempIndex: %d, localClusterInt[x]: %d", queryRangeInt, tempIndex, localClusterInt[tempIndex])
 		}
 		tempToken := localCluster[0][tempIndex]
 		sp.FlagEmpty = append(sp.FlagEmpty, tempToken) //若没有，则找到最接近的整数值作为查询关键字，然后生成token
@@ -270,14 +279,15 @@ func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
 
 			// 找到比 queryRange[1] 小且差距最小的值
 			tempIndex = binarySearchClosest(localClusterInt, queryRangeInt, false)
+			//log.Printf("Right queryRangeInt: %d, tempIndex: %d, localClusterInt[x]: %d", queryRangeInt, tempIndex, localClusterInt[tempIndex])
 		}
 		tempToken := localCluster[len(localCluster)-1][tempIndex]
 		sp.FlagEmpty = append(sp.FlagEmpty, tempToken) //若没有，则找到最接近的整数值作为查询关键字，然后生成token
 		serverTokens = append(serverTokens, tempToken)
 		sp.Flags = append(sp.Flags, "r") // 标记右边界需要查询
 	}
-	if len(sp.FlagEmpty) == 2 && sp.FlagEmpty[0] == sp.FlagEmpty[1] {
-		fmt.Println("Target query is in empty range!")
+	if p1 == p2 && len(sp.FlagEmpty) == 2 && sp.FlagEmpty[0] == sp.FlagEmpty[1] {
+		//fmt.Println("Target query is in empty range!")
 		return []string{}, nil
 	}
 
@@ -385,21 +395,28 @@ func (sp *OurScheme) searchTree(queryValue string) (int, error) {
 	}
 
 	node := "0" // 初始化为树的根节点
-	for i := 0; i < int(math.Log2(float64(len(sp.ClusterFlist)))); i++ {
-		// 获取当前节点的值
-		nodeValue, ok := sp.LocalTree[node]
-		if !ok {
-			return 0, fmt.Errorf("无法找到节点 %s", node)
-		}
+	// 获取当前节点的值
+	nodeValue, ok := sp.LocalTree[node]
+	if !ok {
+		return 0, fmt.Errorf("无法找到节点 %s", node)
+	}
+	if queryValueInt > nodeValue[1] || queryValueInt < nodeValue[0] {
+		return 0, fmt.Errorf("queryValueInt %d 在范围[%d,%d]之外，无法找到节点", queryValueInt, nodeValue[0], nodeValue[1])
+	}
 
+	height := int(math.Ceil(math.Log2(float64(len(sp.ClusterFlist)))))
+	for i := 0; i < height; i++ {
+		valuelr := sp.LocalTree[node+"0"][1]
+		valuerl := sp.LocalTree[node+"1"][0]
 		// 比较查询值与当前节点的值
-		if queryValueInt > nodeValue {
+		if queryValueInt > valuelr {
 			node += "1" // 如果大于当前节点，向右子树移动
-		} else {
+		} else if queryValueInt < valuerl {
 			node += "0" // 如果小于或等于当前节点，向左子树移动
 		}
 	}
-
+	valuelf := sp.LocalTree[node]
+	valuelf[0] += 1
 	// 将二进制节点位置转换为整数
 	position, err := strconv.ParseInt(node, 2, 64)
 	if err != nil {
@@ -411,6 +428,23 @@ func (sp *OurScheme) searchTree(queryValue string) (int, error) {
 
 // 辅助函数：生成位图
 func (sp *OurScheme) generateBitmap(group []int) []byte {
+	// 计算 sp.L - len(group) 的值，并确保它不为负数
+	remainingLength := sp.L - len(group)
+	if remainingLength < 0 {
+		remainingLength = 0
+		// 打印错误信息
+		//log.Printf("错误：group 的长度大于 sp.L，remainingLength 被置为 0")
+	}
+
+	// 生成位图字符串
+	bitString := strings.Repeat("1", len(group)) + strings.Repeat("0", remainingLength)
+
+	// 返回生成的位图字节切片
+	return []byte(bitString)
+}
+
+// 辅助函数：生成位图
+func (sp *OurScheme) generateBitmap1(group []int) []byte {
 	bitString := strings.Repeat("1", len(group)) + strings.Repeat("0", sp.L-len(group))
 	//log.Printf("bitString: %s", bitString)
 	//bitmap, _ := strconv.ParseUint(bitString, 2, 64)
@@ -509,6 +543,42 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+func listSearchClosest(slice []int, value int, findLarger bool) int {
+	if len(slice) == 0 {
+		return -1 // 如果 slice 为空，返回 -1 表示无效
+	}
+
+	closest := -1
+
+	if findLarger {
+		// 向右逐个遍历，查找比 value 大的最近值
+		for i, v := range slice {
+			if v >= value { // 找到第一个大于或等于 value 的值
+				if v == value {
+					return i // 找到相等值，直接返回下标
+				}
+				if closest == -1 || v < slice[closest] {
+					closest = i
+				}
+			}
+		}
+	} else {
+		// 向左逐个遍历，查找比 value 小的最近值
+		for i := len(slice) - 1; i >= 0; i-- {
+			v := slice[i]
+			if v <= value { // 找到第一个小于或等于 value 的值
+				if v == value {
+					return i // 找到相等值，直接返回下标
+				}
+				if closest == -1 || v > slice[closest] {
+					closest = i
+				}
+			}
+		}
+	}
+
+	return closest
 }
 func binarySearchClosest(slice []int, value int, findLarger bool) int {
 	low, high := 0, len(slice)-1

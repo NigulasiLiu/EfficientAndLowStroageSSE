@@ -1,11 +1,16 @@
-module VolumeHidingSSE
+module EfficientAndLowStroageSSE
 
 go 1.23.0
 
 require golang.org/x/crypto v0.31.0
 
 require (
+	github.com/go-echarts/go-echarts/v2 v2.4.6 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/schollz/progressbar/v3 v3.17.1 // indirect
+	github.com/yourbasic/bit v0.0.0-20180313074424-45a4409f4082 // indirect
 	github.com/yuin/goldmark v1.4.13 // indirect
 	golang.org/x/mod v0.17.0 // indirect
 	golang.org/x/net v0.25.0 // indirect

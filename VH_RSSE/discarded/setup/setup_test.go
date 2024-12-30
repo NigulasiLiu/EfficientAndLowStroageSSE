@@ -2,8 +2,8 @@ package setup
 
 import (
 	"VH_RSSE/discarded/binarytree"
-	"VolumeHidingSSE/Experiment"
-	tool2 "VolumeHidingSSE/Experiment/tool"
+	"EfficientAndLowStroageSSE/Experiment"
+	tool2 "EfficientAndLowStroageSSE/Experiment/tool"
 	"testing"
 )
 

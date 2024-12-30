@@ -1,7 +1,7 @@
 package tool
 
 import (
-	"VolumeHidingSSE/config"
+	"EfficientAndLowStroageSSE/config"
 	"bufio"
 	"encoding/csv"
 	"fmt"
@@ -50,7 +50,7 @@ func TestConvertFile(t *testing.T) {
 	defer file.Close()
 
 	// 创建输出文件
-	outputFile, err := os.Create("C:\\Users\\Admin\\Desktop\\GoPros\\VolumeHidingSSE\\dataset\\origin.csv")
+	outputFile, err := os.Create("C:\\Users\\Admin\\Desktop\\GoPros\\EfficientAndLowStroageSSE\\dataset\\origin.csv")
 	if err != nil {
 		t.Fatalf("无法创建 output 文件: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBuildInvertedIndex(t *testing.T) {
 	t.Logf("倒排索引数量: %d", totalKeywords)
 
 	// 创建 CSV 文件
-	csvFile, err := os.Create("C:\\Users\\Admin\\Desktop\\GoPros\\VolumeHidingSSE\\dataset\\InvertedIndex.csv")
+	csvFile, err := os.Create("C:\\Users\\Admin\\Desktop\\GoPros\\EfficientAndLowStroageSSE\\dataset\\InvertedIndex.csv")
 	if err != nil {
 		t.Fatalf("无法创建 CSV 文件: %v", err)
 	}

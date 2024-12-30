@@ -2,7 +2,7 @@ package discarded
 
 //
 //import (
-//	"VolumeHidingSSE/config"
+//	"EfficientAndLowStroageSSE/config"
 //	"fmt"
 //	"sort"
 //	"testing"
