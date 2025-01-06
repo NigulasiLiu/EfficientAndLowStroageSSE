@@ -340,6 +340,7 @@ func TestOurSchemeBuildIndex_storage_metadata(t *testing.T) {
 		"dataset/Gowalla_invertedIndex_new_10000.txt",
 		"dataset/Gowalla_invertedIndex_new_15000.txt",
 		"dataset/Gowalla_invertedIndex_new_20000.txt",
+		config.FilePath_txt,
 	}
 
 	LValues := []int{6424} // 设置 L 值范围

@@ -29,7 +29,7 @@ func main() {
 	FB_BsLen := 1 << 15    // 设置 FB_RSSE 的参数
 	LValues := []int{6424} // 设置 L 值范围
 	k := 999999            // 设置最大查询次数
-	resultCounts := 50     // 结果存储的有效查询次数
+	resultCounts := 200    // 结果存储的有效查询次数
 
 	// 结果存储目录
 	resultsDir := "results"
