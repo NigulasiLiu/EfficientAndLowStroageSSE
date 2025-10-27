@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // OurScheme 系统参数
@@ -226,10 +227,177 @@ func (sp *OurScheme) Update(keyword string) error {
 
 // modifyFunction 空方法：用于修改文件列表，可根据需求扩展
 // 入参为文件列表的指针，支持直接修改原切片
-func (sp *OurScheme) modifyFunction(fileList *[]int) {
+func (sp *OurScheme) modifyFunction1(fileList *[]int) {
 	// 示例：此处可添加修改逻辑，如添加/删除文件ID
 	// 例如：*fileList = append(*fileList, 999) // 添加新文件ID
 	// 例如：if len(*fileList) > 0 { *fileList = (*fileList)[:len(*fileList)-1] } // 删除最后一个文件ID
+}
+
+// 红黑树节点定义
+type RBNode struct {
+	Value  int
+	Color  bool // true: 红色, false: 黑色
+	Left   *RBNode
+	Right  *RBNode
+	Parent *RBNode
+}
+
+// 红黑树结构定义
+type RBTree struct {
+	Root *RBNode
+	NIL  *RBNode // 哨兵节点（简化边界处理）
+}
+
+// 初始化红黑树
+func NewRBTree() *RBTree {
+	nilNode := &RBNode{Color: false} // 哨兵节点为黑色
+	return &RBTree{
+		NIL:  nilNode,
+		Root: nilNode,
+	}
+}
+
+// 红黑树插入函数（标准实现）
+func (t *RBTree) Insert(value int) {
+	newNode := &RBNode{
+		Value: value,
+		Color: true, // 新节点默认为红色
+		Left:  t.NIL,
+		Right: t.NIL,
+	}
+
+	// 标准BST插入
+	var parent *RBNode = nil
+	current := t.Root
+	for current != t.NIL {
+		parent = current
+		if newNode.Value < current.Value {
+			current = current.Left
+		} else {
+			current = current.Right
+		}
+	}
+	newNode.Parent = parent
+	if parent == nil {
+		t.Root = newNode // 树为空时，新节点为根
+	} else if newNode.Value < parent.Value {
+		parent.Left = newNode
+	} else {
+		parent.Right = newNode
+	}
+
+	// 根节点特殊处理（设为黑色）
+	if newNode.Parent == nil {
+		newNode.Color = false
+		return
+	}
+	// 父节点为根节点时无需调整
+	if newNode.Parent.Parent == nil {
+		return
+	}
+
+	// 插入后修复红黑树性质
+	t.fixInsert(newNode)
+}
+
+// 插入后修复红黑树（标准旋转和变色逻辑）
+func (t *RBTree) fixInsert(z *RBNode) {
+	for z.Parent.Color {
+		if z.Parent == z.Parent.Parent.Left {
+			y := z.Parent.Parent.Right // 叔节点
+			if y.Color {
+				// 情况1：叔节点为红色，只需变色
+				z.Parent.Color = false
+				y.Color = false
+				z.Parent.Parent.Color = true
+				z = z.Parent.Parent
+			} else {
+				if z == z.Parent.Right {
+					// 情况2：叔节点为黑色，当前节点为右孩子，先左旋
+					z = z.Parent
+					t.leftRotate(z)
+				}
+				// 情况3：叔节点为黑色，当前节点为左孩子，右旋+变色
+				z.Parent.Color = false
+				z.Parent.Parent.Color = true
+				t.rightRotate(z.Parent.Parent)
+			}
+		} else {
+			// 镜像情况（父节点为右孩子）
+			y := z.Parent.Parent.Left
+			if y.Color {
+				z.Parent.Color = false
+				y.Color = false
+				z.Parent.Parent.Color = true
+				z = z.Parent.Parent
+			} else {
+				if z == z.Parent.Left {
+					z = z.Parent
+					t.rightRotate(z)
+				}
+				z.Parent.Color = false
+				z.Parent.Parent.Color = true
+				t.leftRotate(z.Parent.Parent)
+			}
+		}
+		if z == t.Root {
+			break
+		}
+	}
+	t.Root.Color = false // 确保根节点为黑色
+}
+
+// 左旋操作
+func (t *RBTree) leftRotate(x *RBNode) {
+	y := x.Right
+	x.Right = y.Left
+	if y.Left != t.NIL {
+		y.Left.Parent = x
+	}
+	y.Parent = x.Parent
+	if x.Parent == nil {
+		t.Root = y
+	} else if x == x.Parent.Left {
+		x.Parent.Left = y
+	} else {
+		x.Parent.Right = y
+	}
+	y.Left = x
+	x.Parent = y
+}
+
+// 右旋操作
+func (t *RBTree) rightRotate(y *RBNode) {
+	x := y.Left
+	y.Left = x.Right
+	if x.Right != t.NIL {
+		x.Right.Parent = y
+	}
+	x.Parent = y.Parent
+	if y.Parent == nil {
+		t.Root = x
+	} else if y == y.Parent.Right {
+		y.Parent.Right = x
+	} else {
+		y.Parent.Left = x
+	}
+	x.Right = y
+	y.Parent = x
+}
+
+// modifyFunction：向红黑树根节点插入20个随机值
+func (sp *OurScheme) modifyFunction(fileList *[]int) {
+	// 初始化红黑树
+	rbtree := NewRBTree()
+	// 生成随机种子
+	rand.Seed(time.Now().UnixNano())
+	// 插入20个随机值（范围：1-10000）
+	for i := 0; i < 100; i++ {
+		val := rand.Intn(10000) + 1 // 1-10000的随机数
+		rbtree.Insert(val)
+	}
+	// 可选项：将红黑树的根节点值添加到文件列表（验证插入效果）
+	*fileList = append(*fileList, rbtree.Root.Value)
 }
 
 func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
