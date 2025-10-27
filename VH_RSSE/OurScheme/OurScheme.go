@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/big"
 	"math/rand"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -199,41 +201,85 @@ func (sp *OurScheme) encryptAndStore(keyword string, postings []int) {
 	sp.EDB[hashedKey] = encryptedBitmap
 }
 
-// Update 方法：根据关键词定位分区并修改对应文件列表
-func (sp *OurScheme) Update(keyword string) error {
+// --------------------------
+// OurScheme.Update 方法修改（适配新入参+红黑树插入）
+// --------------------------
+// Update 方法：根据关键词定位分区，将docID数组中每个ID插入红黑树
+// 新签名：func (sp *OurScheme) Update(w string, docID []*big.Int) error
+func (sp *OurScheme) Update(w string, docID []*big.Int) error {
 	// 步骤1：通过本地树搜索定位关键词所在的分区索引P_K
-	p, err := sp.searchTree(keyword)
+	p, err := sp.searchTree(w)
 	if err != nil {
-		return fmt.Errorf("定位关键词分区失败: %v", err)
+		return fmt.Errorf("定位关键词[%s]分区失败: %v", w, err)
 	}
-	P_K := p // 分区索引即为P_K
+	P_K := p
 
 	// 步骤2：校验分区索引有效性
 	if P_K < 0 || P_K >= len(sp.ClusterKlist) {
-		return fmt.Errorf("分区索引P_K=%d无效，超出范围", P_K)
+		return fmt.Errorf("关键词[%s]分区索引P_K=%d无效，超出范围[0,%d]", w, P_K, len(sp.ClusterKlist)-1)
 	}
 
 	// 步骤3：定位对应的文件分区P_F（与P_K索引一致）
 	P_F := P_K
 	if P_F < 0 || P_F >= len(sp.ClusterFlist) {
-		return fmt.Errorf("文件分区索引P_F=%d无效，超出范围", P_F)
+		return fmt.Errorf("文件分区索引P_F=%d无效，超出范围[0,%d]", P_F, len(sp.ClusterFlist)-1)
 	}
 
-	// 步骤4：执行文件列表修改函数（当前为空方法，可根据需求扩展）
-	sp.modifyFunction(&sp.ClusterFlist[P_F])
+	// 步骤4：初始化红黑树，将docID数组中每个ID插入红黑树
+	// 注意：红黑树当前存储int类型，需将big.Int转换为int（若docID超出int范围，需修改红黑树Value类型为*big.Int）
+	rbtree := NewRBTree()
+	for _, id := range docID {
+		// 将big.Int转换为int（假设docID值在int范围内，若超出需调整红黑树Value类型）
+		idInt := int(id.Int64())
+		rbtree.Insert(idInt)
+	}
+
+	// 步骤5：将红黑树关联到文件分区（示例：存储根节点值到文件列表，可根据实际需求扩展）
+	sp.modifyFunction(&sp.ClusterFlist[P_F], rbtree)
 
 	return nil
 }
 
-// modifyFunction 空方法：用于修改文件列表，可根据需求扩展
-// 入参为文件列表的指针，支持直接修改原切片
-func (sp *OurScheme) modifyFunction1(fileList *[]int) {
-	// 示例：此处可添加修改逻辑，如添加/删除文件ID
-	// 例如：*fileList = append(*fileList, 999) // 添加新文件ID
-	// 例如：if len(*fileList) > 0 { *fileList = (*fileList)[:len(*fileList)-1] } // 删除最后一个文件ID
+// --------------------------
+// 辅助函数与红黑树相关代码（保留原有逻辑，适配修改）
+// --------------------------
+
+// generateRandomDocIDs 生成指定数量的随机文档ID（big.Int类型），仅依赖math/rand
+func generateRandomDocIDs(count int) []*big.Int {
+	docIDs := make([]*big.Int, count)
+	// 初始化math/rand随机种子（确保每次运行生成不同随机序列）
+	rand.Seed(time.Now().UnixNano())
+
+	for i := 0; i < count; i++ {
+		// 步骤1：用math/rand生成int64范围的随机数（0 ~ 1e9-1）
+		randInt64 := int64(rand.Intn(1e9))
+		// 步骤2：将int64转为big.Int类型
+		randBigInt := big.NewInt(randInt64)
+		// 步骤3：确保文档ID非零（若随机数为0则加1，否则保持原数）
+		if randBigInt.Sign() == 0 {
+			randBigInt.Add(randBigInt, big.NewInt(1))
+		}
+		docIDs[i] = randBigInt
+	}
+	return docIDs
 }
 
-// 红黑树节点定义
+// modifyFunction 适配修改：接收红黑树，将树中数据关联到文件列表
+func (sp *OurScheme) modifyFunction(fileList *[]int, rbtree *RBTree) {
+	// 示例：将红黑树中所有节点值遍历添加到文件列表（验证插入效果）
+	var traverse func(node *RBNode)
+	traverse = func(node *RBNode) {
+		if node == rbtree.NIL {
+			return
+		}
+		traverse(node.Left)
+		*fileList = append(*fileList, node.Value)
+		traverse(node.Right)
+	}
+	traverse(rbtree.Root)
+}
+
+// 红黑树节点定义（保持原有逻辑）
 type RBNode struct {
 	Value  int
 	Color  bool // true: 红色, false: 黑色
@@ -242,13 +288,13 @@ type RBNode struct {
 	Parent *RBNode
 }
 
-// 红黑树结构定义
+// 红黑树结构定义（保持原有逻辑）
 type RBTree struct {
 	Root *RBNode
 	NIL  *RBNode // 哨兵节点（简化边界处理）
 }
 
-// 初始化红黑树
+// 初始化红黑树（保持原有逻辑）
 func NewRBTree() *RBTree {
 	nilNode := &RBNode{Color: false} // 哨兵节点为黑色
 	return &RBTree{
@@ -257,7 +303,7 @@ func NewRBTree() *RBTree {
 	}
 }
 
-// 红黑树插入函数（标准实现）
+// 红黑树插入函数（保持原有逻辑）
 func (t *RBTree) Insert(value int) {
 	newNode := &RBNode{
 		Value: value,
@@ -300,7 +346,7 @@ func (t *RBTree) Insert(value int) {
 	t.fixInsert(newNode)
 }
 
-// 插入后修复红黑树（标准旋转和变色逻辑）
+// 插入后修复红黑树（保持原有逻辑）
 func (t *RBTree) fixInsert(z *RBNode) {
 	for z.Parent.Color {
 		if z.Parent == z.Parent.Parent.Left {
@@ -347,7 +393,7 @@ func (t *RBTree) fixInsert(z *RBNode) {
 	t.Root.Color = false // 确保根节点为黑色
 }
 
-// 左旋操作
+// 左旋操作（保持原有逻辑）
 func (t *RBTree) leftRotate(x *RBNode) {
 	y := x.Right
 	x.Right = y.Left
@@ -366,7 +412,7 @@ func (t *RBTree) leftRotate(x *RBNode) {
 	x.Parent = y
 }
 
-// 右旋操作
+// 右旋操作（保持原有逻辑）
 func (t *RBTree) rightRotate(y *RBNode) {
 	x := y.Left
 	y.Left = x.Right
@@ -385,19 +431,19 @@ func (t *RBTree) rightRotate(y *RBNode) {
 	y.Parent = x
 }
 
-// modifyFunction：向红黑树根节点插入20个随机值
-func (sp *OurScheme) modifyFunction(fileList *[]int) {
-	// 初始化红黑树
-	rbtree := NewRBTree()
-	// 生成随机种子
-	rand.Seed(time.Now().UnixNano())
-	// 插入20个随机值（范围：1-10000）
-	for i := 0; i < 100; i++ {
-		val := rand.Intn(10000) + 1 // 1-10000的随机数
-		rbtree.Insert(val)
+// ensureDirExists 确保目录存在（保持原有逻辑）
+func ensureDirExists(dir string) error {
+	_, err := os.Stat(dir)
+	if os.IsNotExist(err) {
+		return os.MkdirAll(dir, 0755)
 	}
-	// 可选项：将红黑树的根节点值添加到文件列表（验证插入效果）
-	*fileList = append(*fileList, rbtree.Root.Value)
+	return err
+}
+
+// saveResult 保存测试结果（保持原有框架）
+func saveResult(dir string, count, L int, data map[string]interface{}) error {
+	// 实际实现可使用encoding/json将data序列化到文件（示例框架）
+	return nil
 }
 
 func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
