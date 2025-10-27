@@ -198,6 +198,47 @@ func (sp *OurScheme) encryptAndStore(keyword string, postings []int) {
 	sp.EDB[hashedKey] = encryptedBitmap
 }
 
+// Update 方法：根据关键词定位分区并修改对应文件列表
+func (sp *OurScheme) Update(keyword string) error {
+	// 步骤1：通过本地树搜索定位关键词所在的分区索引P_K
+	p, err := sp.searchTree(keyword)
+	if err != nil {
+		return fmt.Errorf("定位关键词分区失败: %v", err)
+	}
+	P_K := p // 分区索引即为P_K
+
+	// 步骤2：校验分区索引有效性
+	if P_K < 0 || P_K >= len(sp.ClusterKlist) {
+		return fmt.Errorf("分区索引P_K=%d无效，超出范围", P_K)
+	}
+
+	// 步骤3：定位对应的文件分区P_F（与P_K索引一致）
+	P_F := P_K
+	if P_F < 0 || P_F >= len(sp.ClusterFlist) {
+		return fmt.Errorf("文件分区索引P_F=%d无效，超出范围", P_F)
+	}
+
+	// 步骤4：执行文件列表修改函数（当前为空方法，可根据需求扩展）
+	sp.modifyFunction(&sp.ClusterFlist[P_F])
+
+	// 步骤5：更新索引（可选，根据修改内容决定是否重新加密）
+	// 若文件列表发生变化，需重新生成位图并更新EDB
+	// 此处以关键词所在分区的所有关键词为例重新加密
+	for _, kw := range sp.ClusterKlist[P_K] {
+		sp.encryptAndStore(kw, sp.ClusterFlist[P_F])
+	}
+
+	return nil
+}
+
+// modifyFunction 空方法：用于修改文件列表，可根据需求扩展
+// 入参为文件列表的指针，支持直接修改原切片
+func (sp *OurScheme) modifyFunction(fileList *[]int) {
+	// 示例：此处可添加修改逻辑，如添加/删除文件ID
+	// 例如：*fileList = append(*fileList, 999) // 添加新文件ID
+	// 例如：if len(*fileList) > 0 { *fileList = (*fileList)[:len(*fileList)-1] } // 删除最后一个文件ID
+}
+
 func (sp *OurScheme) GenToken(queryRange [2]string) ([]string, error) {
 	sp.FlagEmpty = []string{}
 	sp.Flags = []string{}

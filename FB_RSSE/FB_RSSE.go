@@ -5,10 +5,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
-	"github.com/schollz/progressbar/v3"
 	"math"
 	"math/big"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -123,61 +121,6 @@ func (sp *SystemParameters) BuildDB(invertedIndex map[string][]int) (int, error)
 	return len(sp.DB), nil
 }
 
-// BuildIndex 构建倒排索引，并显示处理进度
-func (sp *SystemParameters) BuildIndex_bar(invertedIndex map[string][]int, sortedKeywords []string) error {
-	sp.TreeHeight = int(math.Ceil(math.Log2(float64(len(invertedIndex))))) // 计算树的高度
-
-	// 构建 LocalTree
-	sp.buildLocalTree(sortedKeywords)
-
-	// 构建数据库
-	_, err := sp.BuildDB(invertedIndex)
-	if err != nil {
-		return err
-	}
-
-	// 初始化进度条，表示处理 tempCode 的进度
-	bar := progressbar.NewOptions(len(sp.DB), progressbar.OptionSetDescription("Processing tempCode"), progressbar.OptionSetWriter(os.Stderr), progressbar.OptionSetWidth(50))
-
-	// 处理每个 tempCode，更新进度条
-	for tempCode, tempBitmap := range sp.DB {
-		// 加密索引
-		K_w := sp.PRF([]byte(tempCode))
-		ST_c, _ := sp.GenerateRandom()
-		ST_cplus1, _ := sp.GenerateRandom()
-		c := tempBitmap.c
-
-		// 将 int 转换为 string
-		c_str := strconv.Itoa(c)
-		// 将 string 转换为 []byte
-		c_str_Array := []byte(c_str)
-
-		// 将 DB 中的计数器值和新计算的令牌值存在 CT
-		sp.CT[tempCode] = Counter{c: c, tokens: ST_cplus1}
-
-		// 生成 sk 和 UT_cplus1
-		sk := sp.H1(append(K_w, c_str_Array...))
-		UT_cplus1 := sp.H1(append(K_w, ST_cplus1...))
-
-		// 加密并存储数据
-		encBitmap := sp.Enc(new(big.Int).SetBytes(sk), tempBitmap.bs)
-		C_ST, _ := XOR(UT_cplus1, ST_c)
-
-		// 将加密的位图和相关数据存储到 EDB
-		sp.EDB[string(UT_cplus1)] = Data{
-			BigIntValue: encBitmap,
-			ByteValue:   C_ST,
-		}
-
-		// 更新进度条
-		bar.Add(1)
-	}
-
-	// 完成处理
-	bar.Finish()
-	return nil
-}
-
 // BuildIndex 构建倒排索引
 func (sp *SystemParameters) BuildIndex(invertedIndex map[string][]int, sortedKeywords []string) error {
 	sp.TreeHeight = int(math.Ceil(math.Log2(float64(len(invertedIndex)))))
@@ -237,6 +180,113 @@ func (sp *SystemParameters) buildLocalTree(sortedKeywords []string) {
 	//sp.LocalTree = localTree
 	sp.localTreeCode = localTreeCode
 }
+
+// TPath generates the set of node encodings (w) from the root to the keyword.
+// This is equivalent to generating all prefixes of the keyword's BRC/BPC code.
+func (sp *SystemParameters) TPath(keyword string) ([]string, error) {
+	code, exists := sp.localTreeCode[keyword]
+	if !exists {
+		return nil, fmt.Errorf("keyword %s not found in localTreeCode", keyword)
+	}
+
+	var pt []string
+	// 从代码的长度开始，逐步截取每次减少一位直到只剩一个字符
+	// 这里的逻辑需要匹配所用的树结构。在BuildDB中的逻辑，是生成所有前缀并用 '*' 填充。
+	// 但在动态更新中，通常只对路径上的节点更新。为了匹配BuildDB/BuildIndex逻辑，
+	// 我们生成带 '*' 的全长编码。
+	for i := len(code); i >= 0; i-- {
+		tempCode := code[:i]
+		// 填充星号到原始代码长度
+		tempCode = tempCode + strings.Repeat("*", len(code)-len(tempCode))
+		if i == 0 {
+			// 跳过全星号（根节点）的特殊情况，如果需要更新根节点，可以保留。
+			// 为了安全，我们通常从 i=1 开始或根据具体协议来。这里保留了 i=0 的逻辑。
+		}
+
+		// 只有在 i > 0 时才添加，因为 i=0 会导致一个全星号的键，可能不需要。
+		if i > 0 {
+			pt = append(pt, tempCode)
+		}
+	}
+	// 注意：这里的路径生成可能与实际的树结构实现有所不同。
+	// 如果使用 BRC/BPC 结构，通常只需要路径上的非叶子节点。
+	return pt, nil
+}
+
+// Update implements the dynamic update algorithm as specified in the image.
+// Parameters:
+// keyword: The keyword to be updated.
+// bs: The new bitmap (bs) for the keyword (represented as *big.Int).
+func (sp *SystemParameters) Update(keyword string, bs *big.Int) error {
+	// 1. 获取路径上的所有编码 PT
+	PT, err := sp.TPath(keyword)
+	if err != nil {
+		return err
+	}
+
+	// 2. 遍历 PT (for w ∈ PT)
+	for _, w := range PT {
+		// 4: Kw||K'w ← FK(w), (STc, c) ← CT[w]
+		// 简化 F_K(w) 的实现：使用 PRF 生成 Kw，使用 H1(Kw) 作为 K'w
+		// 在实际系统中，这应该是一个定义明确的 PRF 且输出长度足够分割。
+		Kw := sp.PRF([]byte(w))
+		// K'w 假设为 Kw 的一个哈希值，或者 F_K(w) 输出的后半部分
+		// 这里简化为 K'w = H2(Kw)
+		Kw_prime := sp.H2(Kw)
+
+		// (STc, c) ← CT[w]
+		info := getOrDefault(sp.CT, w, Counter{c: -1, tokens: []byte{}})
+		ST_c := info.tokens
+		c := info.c
+
+		// 5-7: if (STc, c) = ⊥ then c ← −1, STc ← {0, 1}λ end if
+		if c == -1 {
+			// c 已经设置为 -1
+			ST_c, _ = sp.GenerateRandom() // 生成随机值
+		}
+
+		// 8: STc+1 ← {0, 1}λ
+		ST_cplus1, _ := sp.GenerateRandom()
+		c_plus1 := c + 1
+
+		// 9: CT[w] ← (STc+1, c + 1)
+		sp.CT[w] = Counter{tokens: ST_cplus1, c: c_plus1}
+
+		// 将 int (c+1) 转换为 []byte
+		c_plus1_str := strconv.Itoa(c_plus1)
+		c_plus1_Array := []byte(c_plus1_str)
+
+		// 10: UTc+1 ← H1(Kw, STc+1)
+		UT_cplus1 := sp.H1(append(Kw, ST_cplus1...))
+
+		// 11: CSTc ← H2(Kw, STc+1) ⊕ STc
+		// 注意：协议图中使用 H2(Kw, STc+1)，而 BuildIndex 中使用了 UTc+1 (即 H1(Kw, STc+1))。
+		// 为遵循图片算法，我们使用 H2。
+		H2_output := sp.H2(append(Kw, ST_cplus1...))
+		C_STc, err := XOR(H2_output, ST_c)
+		if err != nil {
+			return fmt.Errorf("XOR error for C_STc: %v", err)
+		}
+
+		// 12: skc+1 ← H3(K'w, c + 1)
+		// 假设 H3 等于 H1
+		sk_cplus1_bytes := sp.H1(append(Kw_prime, c_plus1_Array...))
+		sk_cplus1 := new(big.Int).SetBytes(sk_cplus1_bytes)
+
+		// 13: ec+1 ← Enc(skc+1, bs, n)
+		e_cplus1 := sp.Enc(sk_cplus1, bs)
+
+		// 14: Send (UTc+1,(ec+1, CSTc)) to the server. (即更新 EDB)
+		// Server: 17: Set EDB[UTc+1] ← (ec+1, CSTc)
+		sp.EDB[string(UT_cplus1)] = Data{
+			BigIntValue: e_cplus1, // ec+1
+			ByteValue:   C_STc,    // CSTc
+		}
+	}
+
+	return nil
+}
+
 func (sp *SystemParameters) GenToken(queryRange [2]string, sortedKeywords []string) ([][]byte, [][]byte, []int, error) {
 	targetValue, _ := sp.getBRC(queryRange, sortedKeywords)
 	//fmt.Println("BRC:", targetValue)

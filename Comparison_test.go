@@ -910,10 +910,12 @@ func TestComparison(t *testing.T) {
 				clientTimeCostFB := genTokenDurationFB + localSearchDurationFB
 
 				// 写入每次实验的耗时记录（OurScheme）
-				writer.Write([]string{fmt.Sprintf("%d", i+1), queryRange[0], queryRange[1], fmt.Sprintf("%d", rangeWidth), fmt.Sprintf("%d", buildIndexDurationOurs), fmt.Sprintf("%d", genTokenDurationOurs), fmt.Sprintf("%d", searchTokensDurationOurs), fmt.Sprintf("%d", localSearchDurationOurs), fmt.Sprintf("%d", clientTimeCostOurs)})
+				writer.Write([]string{fmt.Sprintf("%d", i+1), queryRange[0], queryRange[1],
+					fmt.Sprintf("%d", rangeWidth), fmt.Sprintf("%d", buildIndexDurationOurs), fmt.Sprintf("%d", genTokenDurationOurs), fmt.Sprintf("%d", searchTokensDurationOurs), fmt.Sprintf("%d", localSearchDurationOurs), fmt.Sprintf("%d", clientTimeCostOurs)})
 
 				// 写入每次实验的耗时记录（FB_RSSE）
-				writerFB.Write([]string{fmt.Sprintf("%d", i+1), queryRange[0], queryRange[1], fmt.Sprintf("%d", rangeWidth), fmt.Sprintf("%d", buildIndexDurationFB), fmt.Sprintf("%d", genTokenDurationFB), fmt.Sprintf("%d", searchTokensDurationFB), fmt.Sprintf("%d", localSearchDurationFB), fmt.Sprintf("%d", clientTimeCostFB)})
+				writerFB.Write([]string{fmt.Sprintf("%d", i+1), queryRange[0], queryRange[1],
+					fmt.Sprintf("%d", rangeWidth), fmt.Sprintf("%d", buildIndexDurationFB), fmt.Sprintf("%d", genTokenDurationFB), fmt.Sprintf("%d", searchTokensDurationFB), fmt.Sprintf("%d", localSearchDurationFB), fmt.Sprintf("%d", clientTimeCostFB)})
 
 				// 如果有效查询次数达到 100 次，停止循环
 				if validCount >= resultCounts {
