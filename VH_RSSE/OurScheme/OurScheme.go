@@ -221,13 +221,6 @@ func (sp *OurScheme) Update(keyword string) error {
 	// 步骤4：执行文件列表修改函数（当前为空方法，可根据需求扩展）
 	sp.modifyFunction(&sp.ClusterFlist[P_F])
 
-	// 步骤5：更新索引（可选，根据修改内容决定是否重新加密）
-	// 若文件列表发生变化，需重新生成位图并更新EDB
-	// 此处以关键词所在分区的所有关键词为例重新加密
-	for _, kw := range sp.ClusterKlist[P_K] {
-		sp.encryptAndStore(kw, sp.ClusterFlist[P_F])
-	}
-
 	return nil
 }
 

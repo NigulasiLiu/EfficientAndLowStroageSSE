@@ -4,8 +4,10 @@ import (
 	"EfficientAndLowStroageSSE/FB_RSSE"
 	"EfficientAndLowStroageSSE/VH_RSSE/OurScheme"
 	"fmt"
+	"math/big"
 	"os"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -15,45 +17,12 @@ const (
 	L            = 6424                               // 固定L值
 	resultFile   = "update_time_results.txt"          // 结果输出文件
 	largeM       = 335349                             // 大关键字数量
-	datasetDir   = "dataset/"                         // 数据集目录
+	datasetDir   = "dataset/"                         // 数据集目录（.gitignore中已忽略，实际运行需确保存在）
 	fileTemplate = "Gowalla_invertedIndex_new_%d.txt" // 数据集文件名模板
 )
 
 // 待测试的关键字数量
 var testMs = []int{5000, 10000, 15000, 20000}
-
-//// 加载倒排索引（复用项目中已有的逻辑）
-//func loadInvertedIndex(filePath string) (map[string][]int, error) {
-//	invertedIndex := make(map[string][]int)
-//	file, err := os.Open(filePath)
-//	if err != nil {
-//		return nil, fmt.Errorf("打开文件失败: %v", err)
-//	}
-//	defer file.Close()
-//
-//	scanner := bufio.NewScanner(file)
-//	for scanner.Scan() {
-//		line := strings.TrimSpace(scanner.Text())
-//		if line == "" {
-//			continue
-//		}
-//		parts := strings.Fields(line)
-//		if len(parts) < 2 {
-//			return nil, fmt.Errorf("无效行格式: %s", line)
-//		}
-//		keyword := parts[0]
-//		rowIDs := make([]int, 0, len(parts)-1)
-//		for _, part := range parts[1:] {
-//			id, err := strconv.Atoi(part)
-//			if err != nil {
-//				continue // 忽略无效ID
-//			}
-//			rowIDs = append(rowIDs, id)
-//		}
-//		invertedIndex[keyword] = rowIDs
-//	}
-//	return invertedIndex, scanner.Err()
-//}
 
 // 提取并排序关键字
 func getSortedKeywords(invertedIndex map[string][]int) []string {
@@ -61,21 +30,22 @@ func getSortedKeywords(invertedIndex map[string][]int) []string {
 	for k := range invertedIndex {
 		keywords = append(keywords, k)
 	}
-	sort.Strings(keywords)
+	// 按数值排序（与项目中sortKeywords逻辑一致）
+	sort.Slice(keywords, func(i, j int) bool {
+		ki, _ := strconv.ParseInt(keywords[i], 10, 64)
+		kj, _ := strconv.ParseInt(keywords[j], 10, 64)
+		return ki < kj
+	})
 	return keywords
 }
 
-// 生成测试用的更新数据（随机选择关键字和文档ID）
-func generateUpdateData(sortedKeywords []string) (string, int) {
-	if len(sortedKeywords) == 0 {
-		return "", 0
+// 生成测试用的更新位图（模拟文档ID对应的位图）
+func generateUpdateBitmap(docIDs []int) *big.Int {
+	bs := big.NewInt(0)
+	for _, docID := range docIDs {
+		bs.SetBit(bs, docID, 1) // 将文档ID对应位置设为1
 	}
-	// 随机选择一个关键字
-	randIdx := time.Now().UnixNano() % int64(len(sortedKeywords))
-	keyword := sortedKeywords[randIdx]
-	// 生成随机文档ID
-	docID := int(time.Now().UnixNano() % 1000000)
-	return keyword, docID
+	return bs
 }
 
 // 写入测试结果到文件
@@ -116,20 +86,19 @@ func TestUpdatePerformance(t *testing.T) {
 		sortedKeywords = sortedKeywords[:m] // 截取前m个关键字
 
 		// 1. 测试FB_RSSE的Update
-		fb := FB_RSSE.Setup(1 << 15) // 使用项目中默认的BsLen
+		fb := FB_RSSE.Setup(1 << 15) // 使用项目中默认的BsLen（1<<15）
 		// 先构建索引
 		err = fb.BuildIndex(invertedIndex, sortedKeywords)
 		if err != nil {
 			t.Fatalf("FB_RSSE构建索引失败: %v", err)
 		}
-		// 生成更新数据
-		keyword, docID := generateUpdateData(sortedKeywords)
-		if keyword == "" {
-			t.Skip("跳过空关键字更新")
-		}
-		// 测试Update耗时
+		// 选择一个关键字及其文档ID生成更新位图
+		targetKeyword := sortedKeywords[len(sortedKeywords)/2] // 取中间关键字
+		docIDs := invertedIndex[targetKeyword]                 // 获取该关键字对应的文档ID列表
+		updateBitmap := generateUpdateBitmap(docIDs)           // 生成位图
+		// 测试Update耗时（修正参数：传入keyword和bitmap）
 		start := time.Now()
-		err = fb.Update(keyword, docID) // 假设Update函数签名为(keyword string, docID int) error
+		err = fb.Update(targetKeyword, updateBitmap)
 		if err != nil {
 			t.Fatalf("FB_RSSE更新失败: %v", err)
 		}
@@ -145,14 +114,9 @@ func TestUpdatePerformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OurScheme构建索引失败: %v", err)
 		}
-		// 生成更新数据（重新生成避免冲突）
-		keyword, docID = generateUpdateData(sortedKeywords)
-		if keyword == "" {
-			t.Skip("跳过空关键字更新")
-		}
-		// 测试Update耗时
+		// 选择同一个关键字进行更新（OurScheme的Update仅需keyword）
 		start = time.Now()
-		err = ours.Update(keyword, docID) // 假设Update函数签名为(keyword string, docID int) error
+		err = ours.Update(targetKeyword)
 		if err != nil {
 			t.Fatalf("OurScheme更新失败: %v", err)
 		}
@@ -181,12 +145,9 @@ func TestUpdatePerformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OurScheme构建大索引失败: %v", err)
 	}
-	keyword, docID := generateUpdateData(sortedKeywords)
-	if keyword == "" {
-		t.Skip("跳过空关键字更新")
-	}
+	targetKeyword := sortedKeywords[len(sortedKeywords)/2] // 取中间关键字
 	start := time.Now()
-	err = ours.Update(keyword, docID)
+	err = ours.Update(targetKeyword)
 	if err != nil {
 		t.Fatalf("OurScheme大数量更新失败: %v", err)
 	}
