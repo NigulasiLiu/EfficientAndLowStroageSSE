@@ -12,7 +12,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // OurScheme 系统参数
@@ -135,7 +134,7 @@ func (sp *OurScheme) buildLocalTree(clusterKlist [][]string) {
 
 	// 填充到最近的 2 的幂次
 	clusterHeight := int(math.Ceil(math.Log2(float64(len(genList)))))
-	fmt.Printf("clusterHeight: %d\n", clusterHeight)
+	//fmt.Printf("clusterHeight: %d\n", clusterHeight)
 	padding := genList[len(genList)-1][1]
 	for len(genList) < int(math.Pow(2, float64(clusterHeight))) {
 		genList = append(genList, []string{padding, padding})
@@ -238,30 +237,6 @@ func (sp *OurScheme) Update(w string, docID []*big.Int) error {
 	sp.modifyFunction(&sp.ClusterFlist[P_F], rbtree)
 
 	return nil
-}
-
-// --------------------------
-// 辅助函数与红黑树相关代码（保留原有逻辑，适配修改）
-// --------------------------
-
-// generateRandomDocIDs 生成指定数量的随机文档ID（big.Int类型），仅依赖math/rand
-func generateRandomDocIDs(count int) []*big.Int {
-	docIDs := make([]*big.Int, count)
-	// 初始化math/rand随机种子（确保每次运行生成不同随机序列）
-	rand.Seed(time.Now().UnixNano())
-
-	for i := 0; i < count; i++ {
-		// 步骤1：用math/rand生成int64范围的随机数（0 ~ 1e9-1）
-		randInt64 := int64(rand.Intn(1e9))
-		// 步骤2：将int64转为big.Int类型
-		randBigInt := big.NewInt(randInt64)
-		// 步骤3：确保文档ID非零（若随机数为0则加1，否则保持原数）
-		if randBigInt.Sign() == 0 {
-			randBigInt.Add(randBigInt, big.NewInt(1))
-		}
-		docIDs[i] = randBigInt
-	}
-	return docIDs
 }
 
 // modifyFunction 适配修改：接收红黑树，将树中数据关联到文件列表

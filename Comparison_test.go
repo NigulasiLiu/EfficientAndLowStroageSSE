@@ -209,7 +209,7 @@ func TestComparisonBuildIndex(t *testing.T) {
 	//resultCounts := 500    // 结果存储的有效查询次数
 
 	// 结果存储目录
-	resultsDir := "results"
+	resultsDir := "results/results_20251028"
 
 	// 遍历每个文件进行测试
 	for fileIndex, file := range files {

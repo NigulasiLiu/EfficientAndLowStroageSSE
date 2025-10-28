@@ -162,6 +162,19 @@ func (sp *SystemParameters) BuildIndex(invertedIndex map[string][]int, sortedKey
 	return nil
 }
 
+// BuildIndex 构建倒排索引
+func (sp *SystemParameters) BuildIndexMock(invertedIndex map[string][]int, sortedKeywords []string) error {
+	sp.TreeHeight = int(math.Ceil(math.Log2(float64(len(invertedIndex)))))
+	// 构建 LocalTree
+	sp.buildLocalTree(sortedKeywords)
+	_, err := sp.BuildDB(invertedIndex)
+
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // buildLocalTreeFromClusters 构建 LocalTree
 func (sp *SystemParameters) buildLocalTree(sortedKeywords []string) {
 	localTreeCode := make(map[string]string)
@@ -217,7 +230,7 @@ func (sp *SystemParameters) TPath(keyword string) ([]string, error) {
 // Parameters:
 // keyword: The keyword to be updated.
 // bs: The new bitmap (bs) for the keyword (represented as *big.Int).
-func (sp *SystemParameters) Update(keyword string, bs *big.Int) error {
+func (sp *SystemParameters) UpdateBigInt(keyword string, bs *big.Int) error {
 	// 1. 获取路径上的所有编码 PT
 	PT, err := sp.TPath(keyword)
 	if err != nil {
@@ -287,6 +300,76 @@ func (sp *SystemParameters) Update(keyword string, bs *big.Int) error {
 	return nil
 }
 
+// Update 更新FB_RSSE的索引，文档ID改为int类型
+func (sp *SystemParameters) Update(keyword string, bs int) error {
+	// 1. 获取路径上的所有编码 PT
+	PT, err := sp.TPath(keyword)
+	if err != nil {
+		return err
+	}
+
+	// 2. 遍历 PT (for w ∈ PT)
+	for _, w := range PT {
+		// 4: Kw||K'w ← FK(w), (STc, c) ← CT[w]
+		// 简化 F_K(w) 的实现：使用 PRF 生成 Kw，使用 H1(Kw) 作为 K'w
+		// 在实际系统中，这应该是一个定义明确的 PRF 且输出长度足够分割。
+		Kw := sp.PRF([]byte(w))
+		// K'w 假设为 Kw 的一个哈希值，或者 F_K(w) 输出的后半部分
+		// 这里简化为 K'w = H2(Kw)
+		Kw_prime := sp.H2(Kw)
+
+		// (STc, c) ← CT[w]
+		info := getOrDefault(sp.CT, w, Counter{c: -1, tokens: []byte{}})
+		ST_c := info.tokens
+		c := info.c
+
+		// 5-7: if (STc, c) = ⊥ then c ← −1, STc ← {0, 1}λ end if
+		if c == -1 {
+			// c 已经设置为 -1
+			ST_c, _ = sp.GenerateRandom() // 生成随机值
+		}
+
+		// 8: STc+1 ← {0, 1}λ
+		ST_cplus1, _ := sp.GenerateRandom()
+		c_plus1 := c + 1
+
+		// 9: CT[w] ← (STc+1, c + 1)
+		sp.CT[w] = Counter{tokens: ST_cplus1, c: c_plus1}
+
+		// 将 int (c+1) 转换为 []byte
+		c_plus1_str := strconv.Itoa(c_plus1)
+		c_plus1_Array := []byte(c_plus1_str)
+
+		// 10: UTc+1 ← H1(Kw, STc+1)
+		UT_cplus1 := sp.H1(append(Kw, ST_cplus1...))
+
+		// 11: CSTc ← H2(Kw, STc+1) ⊕ STc
+		// 注意：协议图中使用 H2(Kw, STc+1)，而 BuildIndex 中使用了 UTc+1 (即 H1(Kw, STc+1))。
+		// 为遵循图片算法，我们使用 H2。
+		H2_output := sp.H2(append(Kw, ST_cplus1...))
+		C_STc, err := XOR(H2_output, ST_c)
+		if err != nil {
+			return fmt.Errorf("XOR error for C_STc: %v", err)
+		}
+
+		// 12: skc+1 ← H3(K'w, c + 1)
+		// 假设 H3 等于 H1
+		sk_cplus1_bytes := sp.H1(append(Kw_prime, c_plus1_Array...))
+		sk_cplus1 := new(big.Int).SetBytes(sk_cplus1_bytes)
+
+		// 13: ec+1 ← Enc(skc+1, bs, n)
+		bigIntBs := new(big.Int).SetInt64(int64(bs))
+		e_cplus1 := sp.Enc(sk_cplus1, bigIntBs)
+
+		// 14: Send (UTc+1,(ec+1, CSTc)) to the server. (即更新 EDB)
+		// Server: 17: Set EDB[UTc+1] ← (ec+1, CSTc)
+		sp.EDB[string(UT_cplus1)] = Data{
+			BigIntValue: e_cplus1, // ec+1
+			ByteValue:   C_STc,    // CSTc
+		}
+	}
+	return nil
+}
 func (sp *SystemParameters) GenToken(queryRange [2]string, sortedKeywords []string) ([][]byte, [][]byte, []int, error) {
 	targetValue, _ := sp.getBRC(queryRange, sortedKeywords)
 	//fmt.Println("BRC:", targetValue)

@@ -58,33 +58,35 @@ func writeResult(content string) error {
 	return err
 }
 
-// TestUpdatePerformance 测试索引构建及更新性能对比（保留代码段2，修改代码段3）
-func TestUpdatePerformance(t *testing.T) {
-	// 设置参数（补充25000关键字的数据集）
+// TestUpdatePerformance 测试索引构建及更新性能对比（仅保留更新平均耗时日志）
+func TestUpdatePerformance1(t *testing.T) {
+	// 设置参数
 	files := []string{
-		"dataset/Gowalla_invertedIndex_new_5000.txt",
-		"dataset/Gowalla_invertedIndex_new_10000.txt",
-		"dataset/Gowalla_invertedIndex_new_15000.txt",
+		//"dataset/Gowalla_invertedIndex_new_5000.txt",
+		//"dataset/Gowalla_invertedIndex_new_10000.txt",
+		//"dataset/Gowalla_invertedIndex_new_15000.txt",
 		"dataset/Gowalla_invertedIndex_new_20000.txt",
-		"dataset/Gowalla_invertedIndex_new_25000.txt", // 新增25000关键字数据集
+		//"dataset/Gowalla_invertedIndex_new_25000.txt",
 	}
 
-	indexNum := []int{5000, 10000, 15000, 20000, 25000} // 对应关键字数量
-	FB_BsLen := 1 << 15                                 // FB_DSSE 参数
-	LValues := []int{6424}                              // L值范围
-	resultsDir := "results"                             // 结果存储目录
+	//indexNum := []int{5000}
+	//indexNum := []int{10000}
+	//indexNum := []int{15000}
+	indexNum := []int{20000}
+	//indexNum := []int{25000}
+	FB_BsLen := 1 << 15
+	LValues := []int{6424}
+	resultsDir := "results"
 
-	// 确保结果目录存在
+	// 确保目录存在
 	if err := ensureDirExists(resultsDir); err != nil {
 		t.Fatalf("创建结果目录失败: %v", err)
 	}
 
-	// 初始化随机种子（确保每次测试随机值可复现）
 	rand.Seed(time.Now().UnixNano())
 
-	// 遍历每个文件进行测试
 	for fileIndex, file := range files {
-		// 加载倒排索引
+		// 加载索引
 		invertedIndex, err := loadInvertedIndex(file)
 		if err != nil {
 			t.Fatalf("无法加载文件 %s: %v", file, err)
@@ -95,100 +97,72 @@ func TestUpdatePerformance(t *testing.T) {
 		if len(keywords) == 0 {
 			t.Fatalf("文件 %s 中未找到关键词", file)
 		}
-		t.Logf("当前测试数据集: %d 个关键字", indexNum[fileIndex])
 
-		// 测量关键词排序时间
+		// 排序关键词（无日志）
 		startTime := time.Now()
 		sortedKeywords := sortKeywords(invertedIndex)
 		sortDuration := time.Since(startTime).Nanoseconds()
-		t.Logf("关键词排序耗时: %d 纳秒", sortDuration)
 
-		// 遍历每个L值
 		for _, L := range LValues {
-			// 初始化两种方案
+			// 初始化方案
 			ours := OurScheme.Setup(L)
-			fbDsseParams := FB_RSSE.Setup(FB_BsLen) // FB_DSSE的系统参数对象
+			fbDsseParams := FB_RSSE.Setup(FB_BsLen)
 
-			// --------------------------
-			// 1. 构建索引（OurScheme）
-			// --------------------------
+			// 构建索引（无日志）
 			startTime = time.Now()
 			err = ours.BuildIndex(invertedIndex, sortedKeywords)
 			if err != nil {
 				t.Fatalf("OurScheme 构建索引失败: %v", err)
 			}
 			buildOursDur := time.Since(startTime).Nanoseconds()
-			t.Logf("OurScheme 构建索引耗时: %d 纳秒", buildOursDur)
 
-			// --------------------------
-			// 2. 构建索引（FB_DSSE）
-			// --------------------------
 			startTime = time.Now()
 			err = fbDsseParams.BuildIndex(invertedIndex, sortedKeywords)
 			if err != nil {
 				t.Fatalf("FB_DSSE 构建索引失败: %v", err)
 			}
 			buildFBDur := time.Since(startTime).Nanoseconds()
-			t.Logf("FB_DSSE 构建索引耗时: %d 纳秒", buildFBDur)
 
-			// --------------------------
-			// 3. 执行更新逻辑（OurScheme）- 代码段3修改后
-			// 新签名：func (sp *OurScheme) Update(w string, docID []*big.Int) error
-			// --------------------------
-			const updateTotalTimes = 10 // 固定更新10次，取平均值
-			t.Logf("开始执行 OurScheme 更新测试，共更新 %d 次", updateTotalTimes)
-
+			// OurScheme 更新测试
+			const updateTotalTimes = 500
 			var totalOursDur int64 = 0
-			// 执行10次更新，累计总耗时
 			for updateRound := 0; updateRound < updateTotalTimes; updateRound++ {
-				// 准备单次更新参数
-				kw := keywords[rand.Intn(len(keywords))] // 随机选关键字
-				docIDs := generateRandomDocIDs(10)       // 生成10个随机文档ID（可调整数量）
+				kw := strconv.Itoa(keywords[rand.Intn(len(keywords))])
+				docIDs := generateRandomDocIDsBigInt(1)
 
-				// 单次更新计时
 				start := time.Now()
-				if err := ours.Update(strconv.Itoa(kw), docIDs); err != nil {
-					t.Errorf("OurScheme 第 %d 次更新关键字 %s 失败: %v", updateRound+1, kw, err)
-					continue // 失败仍继续后续测试，避免单次失败中断整体流程
+				if err := ours.Update(kw, docIDs); err != nil {
+					t.Errorf("OurScheme 第 %d 次更新失败: %v", updateRound+1, err)
+					continue
 				}
 				totalOursDur += time.Since(start).Nanoseconds()
 			}
-
-			// 计算平均耗时
 			avgOursDur := totalOursDur / updateTotalTimes
-			t.Logf("OurScheme 完成 %d 次更新，总耗时: %d 纳秒，单次平均耗时: %d 纳秒",
-				updateTotalTimes, totalOursDur, avgOursDur)
+			// 仅保留平均耗时日志
+			t.Logf("OurScheme 关键字数量=%d, 平均更新耗时=%d 纳秒", indexNum[fileIndex], avgOursDur)
 
-			// --------------------------
-			// 4. 执行更新逻辑（FB_DSSE）- 代码段3修改后
-			// 新签名：func (sp *SystemParameters) Update(w string, docID []*big.Int) error
-			// --------------------------
-			t.Logf("开始执行 FB_DSSE 更新测试，共更新 %d 次", updateTotalTimes)
-
+			// FB_DSSE 更新测试
 			var totalFBDur int64 = 0
-			// 执行10次更新，累计总耗时
 			for updateRound := 0; updateRound < updateTotalTimes; updateRound++ {
-				// 准备单次更新参数
-				kw := keywords[rand.Intn(len(keywords))]
-				docIDs := generateRandomDocIDs(10)
+				kw := strconv.Itoa(keywords[rand.Intn(len(keywords))])
+				docIDs := generateRandomDocIDsBigInt(1)
+				if len(docIDs) == 0 {
+					t.Errorf("FB_DSSE 第 %d 次更新: 文档ID为空", updateRound+1)
+					continue
+				}
 
-				// 单次更新计时
 				start := time.Now()
-				if err := fbDsseParams.Update(strconv.Itoa(kw), docIDs[0]); err != nil {
-					t.Errorf("FB_DSSE 第 %d 次更新关键字 %s 失败: %v", updateRound+1, kw, err)
+				if err := fbDsseParams.UpdateBigInt(kw, docIDs[0]); err != nil {
+					t.Errorf("FB_DSSE 第 %d 次更新失败: %v", updateRound+1, err)
 					continue
 				}
 				totalFBDur += time.Since(start).Nanoseconds()
 			}
-
-			// 计算平均耗时
 			avgFBDur := totalFBDur / updateTotalTimes
-			t.Logf("FB_DSSE 完成 %d 次更新，总耗时: %d 纳秒，单次平均耗时: %d 纳秒",
-				updateTotalTimes, totalFBDur, avgFBDur)
+			// 仅保留平均耗时日志
+			t.Logf("FB_DSSE 关键字数量=%d, 平均更新耗时=%d 纳秒", indexNum[fileIndex], avgFBDur)
 
-			// --------------------------
-			// 5. 保存结果（新增平均耗时字段）
-			// --------------------------
+			// 保存结果（无日志）
 			result := map[string]interface{}{
 				"keyword_count":      indexNum[fileIndex],
 				"L":                  L,
@@ -200,14 +174,158 @@ func TestUpdatePerformance(t *testing.T) {
 				"update_fb_total":    totalFBDur,
 				"update_fb_avg":      avgFBDur,
 				"update_rounds":      updateTotalTimes,
-				"doc_ids_per_update": 10, // 每次更新的文档ID数量
+				"doc_ids_per_update": 10,
 			}
 			if err := saveResult(resultsDir, indexNum[fileIndex], L, result); err != nil {
 				t.Errorf("保存结果失败: %v", err)
 			}
 		}
 	}
-	t.Log("所有测试完成")
+}
+func TestUpdatePerformance(t *testing.T) {
+	// 设置参数
+	files := []string{
+		"dataset/Gowalla_invertedIndex_new_5000.txt",
+		"dataset/Gowalla_invertedIndex_new_10000.txt",
+		"dataset/Gowalla_invertedIndex_new_15000.txt",
+		"dataset/Gowalla_invertedIndex_new_20000.txt",
+		"dataset/Gowalla_invertedIndex_new_25000.txt",
+	}
+
+	indexNum := []int{5000, 10000, 15000, 20000, 25000}
+	FB_BsLen := 15
+	LValues := []int{6424}
+	resultsDir := "results"
+
+	// 确保目录存在
+	if err := ensureDirExists(resultsDir); err != nil {
+		t.Fatalf("创建结果目录失败: %v", err)
+	}
+
+	rand.Seed(time.Now().UnixNano())
+
+	for fileIndex, file := range files {
+		t.Logf("开始处理数据集：%s（关键字数量：%d）", file, indexNum[fileIndex])
+
+		// 加载索引
+		invertedIndex, err := loadInvertedIndex(file)
+		if err != nil {
+			t.Fatalf("无法加载文件 %s: %v", file, err)
+		}
+
+		// 提取关键词
+		keywords := extractKeywordsFromIndex(invertedIndex)
+		if len(keywords) == 0 {
+			t.Fatalf("文件 %s 中未找到关键词", file)
+		}
+
+		// 排序关键词
+		startTime := time.Now()
+		sortedKeywords := sortKeywords(invertedIndex)
+		sortDuration := time.Since(startTime).Nanoseconds()
+
+		for _, L := range LValues {
+			t.Logf("开始处理 L值：%d 的测试流程", L)
+
+			// 初始化方案
+			ours := OurScheme.Setup(L)
+			fbDsseParams := FB_RSSE.Setup(FB_BsLen)
+
+			// --------------------------
+			// 索引构建阶段 - 插入流程日志
+			// --------------------------
+			t.Logf("开始索引构建流程（关键字数量：%d，L值：%d）", indexNum[fileIndex], L)
+
+			// OurScheme 构建索引
+			t.Logf("开始 OurScheme 索引构建...")
+			startTime = time.Now()
+			err = ours.BuildIndex(invertedIndex, sortedKeywords)
+			if err != nil {
+				t.Fatalf("OurScheme 构建索引失败: %v", err)
+			}
+			buildOursDur := time.Since(startTime).Nanoseconds()
+			t.Logf("OurScheme 索引构建完成，耗时：%d 纳秒", buildOursDur)
+
+			// FB_DSSE 构建索引
+			t.Logf("开始 FB_DSSE 索引构建...")
+			startTime = time.Now()
+			err = fbDsseParams.BuildIndexMock(invertedIndex, sortedKeywords)
+			if err != nil {
+				t.Fatalf("FB_DSSE 构建索引失败: %v", err)
+			}
+			buildFBDur := time.Since(startTime).Nanoseconds()
+			t.Logf("FB_DSSE 索引构建完成，耗时：%d 纳秒", buildFBDur)
+			t.Logf("索引构建流程全部完成（关键字数量：%d，L值：%d）", indexNum[fileIndex], L)
+
+			// --------------------------
+			// 更新测试阶段 - 插入流程日志
+			// --------------------------
+			const updateTotalTimes = 500
+			t.Logf("开始更新测试流程（关键字数量：%d，L值：%d，总更新次数：%d）", indexNum[fileIndex], L, updateTotalTimes)
+
+			// OurScheme 更新测试
+			t.Logf("开始 OurScheme 更新测试...")
+			var totalOursDur int64 = 0
+			for updateRound := 0; updateRound < updateTotalTimes; updateRound++ {
+				kw := strconv.Itoa(keywords[rand.Intn(len(keywords))])
+				docIDs := generateRandomDocIDsBigInt(100)
+
+				start := time.Now()
+				if err := ours.Update(kw, docIDs); err != nil {
+					t.Errorf("OurScheme 第 %d 次更新失败: %v", updateRound+1, err)
+					continue
+				}
+				totalOursDur += time.Since(start).Nanoseconds()
+			}
+			avgOursDur := totalOursDur / updateTotalTimes
+			t.Logf("OurScheme 更新测试完成，关键字数量=%d, 平均更新耗时=%d 纳秒", indexNum[fileIndex], avgOursDur)
+
+			// FB_DSSE 更新测试
+			t.Logf("开始 FB_DSSE 更新测试...")
+			var totalFBDur int64 = 0
+			for updateRound := 0; updateRound < updateTotalTimes; updateRound++ {
+				kw := strconv.Itoa(keywords[rand.Intn(len(keywords))])
+				docIDs := generateRandomDocIDsBigInt(1)
+				if len(docIDs) == 0 {
+					t.Errorf("FB_DSSE 第 %d 次更新: 文档ID为空", updateRound+1)
+					continue
+				}
+
+				start := time.Now()
+				if err := fbDsseParams.UpdateBigInt(kw, docIDs[0]); err != nil {
+					t.Errorf("FB_DSSE 第 %d 次更新失败: %v", updateRound+1, err)
+					continue
+				}
+				totalFBDur += time.Since(start).Nanoseconds()
+			}
+			avgFBDur := totalFBDur / updateTotalTimes
+			t.Logf("FB_DSSE 更新测试完成，关键字数量=%d, 平均更新耗时=%d 纳秒", indexNum[fileIndex], avgFBDur)
+			t.Logf("更新测试流程全部完成（关键字数量：%d，L值：%d）", indexNum[fileIndex], L)
+
+			// 保存结果
+			result := map[string]interface{}{
+				"keyword_count":      indexNum[fileIndex],
+				"L":                  L,
+				"sort_duration":      sortDuration,
+				"build_ours":         buildOursDur,
+				"build_fb":           buildFBDur,
+				"update_ours_total":  totalOursDur,
+				"update_ours_avg":    avgOursDur,
+				"update_fb_total":    totalFBDur,
+				"update_fb_avg":      avgFBDur,
+				"update_rounds":      updateTotalTimes,
+				"doc_ids_per_update": 10,
+			}
+			if err := saveResult(resultsDir, indexNum[fileIndex], L, result); err != nil {
+				t.Errorf("保存结果失败: %v", err)
+			}
+
+			t.Logf("当前L值（%d）测试流程全部完成（关键字数量：%d）", L, indexNum[fileIndex])
+		}
+
+		t.Logf("当前数据集（%s）测试流程全部完成", file)
+	}
+	t.Log("所有测试流程全部完成")
 }
 
 // 辅助函数：确保目录存在（如果不存在则创建）
@@ -226,15 +344,33 @@ func saveResult(dir string, count, L int, data map[string]interface{}) error {
 	return nil
 }
 
+// generateRandomDocIDs 生成指定数量的随机文档ID（int类型），仅依赖math/rand
+func generateRandomDocIDs(count int) []int {
+	docIDs := make([]int, count)
+	// 初始化随机种子（全局只需初始化一次，若外部已初始化可移除）
+	rand.Seed(time.Now().UnixNano())
+
+	for i := 0; i < count; i++ {
+		// 生成1~1e3范围的随机int（确保非零）
+		randInt := rand.Intn(1e3) // 0~999
+		if randInt == 0 {
+			randInt = 1 // 避免0值，确保ID有效
+		}
+		docIDs[i] = randInt
+	}
+	return docIDs
+}
+
 // generateRandomDocIDs 生成指定数量的随机文档ID（big.Int类型），仅依赖math/rand
-func generateRandomDocIDs(count int) []*big.Int {
+func generateRandomDocIDsBigInt(count int) []*big.Int {
 	docIDs := make([]*big.Int, count)
 	// 初始化math/rand随机种子（确保每次运行生成不同随机序列）
 	rand.Seed(time.Now().UnixNano())
 
 	for i := 0; i < count; i++ {
 		// 步骤1：用math/rand生成int64范围的随机数（0 ~ 1e9-1）
-		randInt64 := int64(rand.Intn(1e9))
+		//randInt64 := int64(rand.Intn(1e9))
+		randInt64 := int64(rand.Intn(1e6))
 		// 步骤2：将int64转为big.Int类型
 		randBigInt := big.NewInt(randInt64)
 		// 步骤3：确保文档ID非零（若随机数为0则加1，否则保持原数）
