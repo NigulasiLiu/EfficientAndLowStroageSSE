@@ -2,11 +2,12 @@ package FB_RSSE
 
 import (
 	"EfficientAndLowStroageSSE/config"
-	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
 	"math"
 	"math/big"
+	"math/rand"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -162,16 +163,167 @@ func (sp *SystemParameters) BuildIndex(invertedIndex map[string][]int, sortedKey
 	return nil
 }
 
+func (sp *SystemParameters) BuildDBMock1(invertedIndex map[string][]int) (int, error) {
+	// 创建一个大整数表示位图
+	for keyword, docIDs := range invertedIndex {
+		code := sp.localTreeCode[keyword]
+		// 从代码的长度开始，逐步截取每次减少一位直到只剩一个字符
+		for i := len(code); i >= 0; i-- {
+			tempCode := code[:i]
+			tempCode = tempCode + strings.Repeat("*", len(code)-len(tempCode))
+
+			info := getOrDefault(sp.DB, tempCode, bitmap{
+				c:  -1,
+				bs: big.NewInt(0),
+			})
+			info.c++
+			// 遍历 docIDs，将每个文档ID映射到位图的对应位置
+			for _, docID := range docIDs {
+				// 将对应的位设置为 1，使用 big.Int 的 SetBit 方法
+				//docID = 1000
+				info.bs.SetBit(info.bs, docID, 1)
+			}
+			sp.DB[tempCode] = info
+			//// 打印 keyword 和对应的 info.bs 的最低 50 位
+			//fmt.Printf("tempCode: %s: ", tempCode)
+			//PrintLowestBits(info.bs, 50)
+		}
+	}
+	return len(sp.DB), nil
+}
+
 // BuildIndex 构建倒排索引
-func (sp *SystemParameters) BuildIndexMock(invertedIndex map[string][]int, sortedKeywords []string) error {
+func (sp *SystemParameters) BuildIndexMock1(invertedIndex map[string][]int, sortedKeywords []string) error {
 	sp.TreeHeight = int(math.Ceil(math.Log2(float64(len(invertedIndex)))))
 	// 构建 LocalTree
 	sp.buildLocalTree(sortedKeywords)
-	_, err := sp.BuildDB(invertedIndex)
+	_, err := sp.BuildDBMock(invertedIndex)
 
 	if err != nil {
 		return err
 	}
+	for tempCode, tempBitmap := range sp.DB {
+		//加密索引
+		K_w := sp.PRF([]byte(tempCode))
+		ST_c, _ := sp.GenerateRandom()
+		ST_cplus1, _ := sp.GenerateRandom()
+		c := tempBitmap.c
+		// 将 int 转换为 string
+		c_str := strconv.Itoa(c)
+		// 将 string 转换为 []byte
+		c_str_Array := []byte(c_str)
+		//将DB中的计数器值和新计算的令牌值存在CT
+		sp.CT[tempCode] = Counter{c: c, tokens: ST_cplus1}
+		sk := sp.H1(append(K_w, c_str_Array...))
+		UT_cplus1 := sp.H1(append(K_w, ST_cplus1...))
+		encBitmap := sp.Enc(new(big.Int).SetBytes(sk), tempBitmap.bs)
+
+		//fmt.Printf("Build Index tempCode: %s: ", tempCode)
+		//PrintLowestBits(encBitmap, 50)
+
+		C_ST, _ := XOR(UT_cplus1, ST_c)
+		//fmt.Printf("C_ST: %x\n", C_ST)
+		sp.EDB[string(UT_cplus1)] = Data{
+			BigIntValue: encBitmap,
+			ByteValue:   C_ST,
+		}
+
+	}
+
+	return nil
+}
+
+// BuildDBMock 生成临时位图数据（不存储到sp.DB，直接返回用于加密）
+// 返回值：临时映射表（tempCode -> bitmap），用于BuildIndexMock处理后立即销毁
+func (sp *SystemParameters) BuildDBMock(invertedIndex map[string][]int) (map[string]bitmap, error) {
+	// 临时存储生成的位图，仅在BuildIndexMock中使用后即销毁
+	tempDB := make(map[string]bitmap)
+
+	for keyword, docIDs := range invertedIndex {
+		code, exists := sp.localTreeCode[keyword]
+		if !exists {
+			return nil, fmt.Errorf("keyword %s not found in localTreeCode", keyword)
+		}
+
+		// 生成所有前缀编码（与原逻辑一致）
+		for i := len(code); i >= 0; i-- {
+			tempCode := code[:i]
+			tempCode = tempCode + strings.Repeat("*", len(code)-len(tempCode))
+
+			// 从临时映射中获取或初始化bitmap（不使用sp.DB）
+			info := getOrDefault(tempDB, tempCode, bitmap{
+				c:  -1,
+				bs: big.NewInt(0), // 临时big.Int，仅在当前循环中使用
+			})
+			info.c++
+
+			// 在位图中设置文档ID对应的位（核心临时操作）
+			for _, docID := range docIDs {
+				info.bs.SetBit(info.bs, docID%1e6, 1)
+			}
+			tempDB[tempCode] = info
+		}
+
+		// 每处理完一个关键词，手动触发一次GC，回收临时big.Int
+		runtime.GC()
+	}
+
+	return tempDB, nil
+}
+
+// BuildIndexMock 边生成EDB边清除临时数据，不依赖全局DB存储
+func (sp *SystemParameters) BuildIndexMock(invertedIndex map[string][]int, sortedKeywords []string) error {
+	sp.TreeHeight = int(math.Ceil(math.Log2(float64(len(invertedIndex)))))
+	sp.buildLocalTree(sortedKeywords)
+
+	// 1. 生成临时位图数据（不存入sp.DB，仅在内存中临时持有）
+	tempDB, err := sp.BuildDBMock(invertedIndex)
+	if err != nil {
+		return err
+	}
+	// 延迟清理临时DB（确保加密完成后立即释放）
+	defer func() {
+		tempDB = nil // 解除引用
+		runtime.GC() // 强制回收临时DB中的所有big.Int
+	}()
+
+	// 2. 遍历临时位图，加密后写入EDB，同时清理临时变量
+	for tempCode, tempBitmap := range tempDB {
+		// 加密索引所需的临时变量（局部定义，迭代后自动销毁）
+		K_w := sp.PRF([]byte(tempCode))
+		ST_c, _ := sp.GenerateRandom()
+		ST_cplus1, _ := sp.GenerateRandom()
+		c := tempBitmap.c
+
+		// 临时转换计数器（局部变量，用完即销毁）
+		c_str := strconv.Itoa(c)
+		c_str_Array := []byte(c_str)
+
+		// 更新CT（仅保留必要的计数器和令牌，无冗余数据）
+		sp.CT[tempCode] = Counter{c: c, tokens: ST_cplus1}
+
+		// 生成加密密钥（临时big.Int，加密后立即丢弃）
+		skBytes := sp.H1(append(K_w, c_str_Array...))
+		sk := new(big.Int).SetBytes(skBytes) // 局部临时变量
+
+		// 加密位图（使用临时DB中的bitmap，加密后不再引用）
+		encBitmap := sp.Enc(sk, tempBitmap.bs)
+
+		// 生成并存储到EDB
+		UT_cplus1 := sp.H1(append(K_w, ST_cplus1...))
+		C_ST, _ := XOR(UT_cplus1, ST_c)
+		sp.EDB[string(UT_cplus1)] = Data{
+			BigIntValue: encBitmap,
+			ByteValue:   C_ST,
+		}
+
+		// 清除当前迭代的临时大对象（关键：主动释放big.Int引用）
+		sk = nil
+		tempBitmap.bs = nil // 解除对位图的引用
+	}
+
+	// 最终清理：确保所有临时数据被回收
+	runtime.GC()
 	return nil
 }
 
@@ -288,7 +440,7 @@ func (sp *SystemParameters) UpdateBigInt(keyword string, bs *big.Int) error {
 
 		// 13: ec+1 ← Enc(skc+1, bs, n)
 		e_cplus1 := sp.Enc(sk_cplus1, bs)
-
+		e_cplus1 = nil
 		// 14: Send (UTc+1,(ec+1, CSTc)) to the server. (即更新 EDB)
 		// Server: 17: Set EDB[UTc+1] ← (ec+1, CSTc)
 		sp.EDB[string(UT_cplus1)] = Data{
